@@ -1,0 +1,34 @@
+server:
+  port: 8080
+  host: "0.0.0.0"
+
+# Mode: "grpc" to connect to the live Query Service container
+mode: "grpc"
+
+query_service:
+  endpoint: "localhost:7001"
+  tls:
+    enabled: true
+    ca_cert: "crypto/bank_a/ca.crt"
+    client_cert: "crypto/bank_a/tls_client.crt"
+    client_key: "crypto/bank_a/tls_client.key"
+
+default_msp_id: "CentralBankMSP"
+
+endorsers:
+  CentralBankMSP:
+    msp_id: "CentralBankMSP"
+    cert_path: "crypto/centralbank/cert.pem"
+    key_path: "crypto/centralbank/priv_sk"
+  Org1MSP:
+    msp_id: "Org1MSP"
+    cert_path: "crypto/bank_a/cert.pem"
+    key_path: "crypto/bank_a/priv_sk"
+  Org2MSP:
+    msp_id: "Org2MSP"
+    cert_path: "crypto/bank_b/cert.pem"
+    key_path: "crypto/bank_b/priv_sk"
+
+namespaces:
+  public: "cbdc_public"
+  central_bank_pdc: "cbdc_cb_pdc"

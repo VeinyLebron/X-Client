@@ -1,0 +1,68 @@
+version: '3.8'
+
+# Docker Compose deployment for all 3 Organization Endorser Clients
+# Joins the Fabric-X sample network ("fabric-x_default" or "devnet_default")
+
+services:
+  # 1. Central Bank Endorser Client
+  x-client-centralbank:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: x-client-centralbank
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - MODE=grpc
+      - QUERY_SERVICE_ENDPOINT=committer-query-service:7001
+      - DEFAULT_MSP_ID=CentralBankMSP
+    volumes:
+      - ./config/centralbank.yaml:/root/config/config.yaml:ro
+      - ./crypto/centralbank:/root/crypto/centralbank:ro
+    networks:
+      - fabric-x-network
+
+  # 2. Commercial Bank A Endorser Client
+  x-client-bank-a:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: x-client-bank-a
+    ports:
+      - "8081:8081"
+    environment:
+      - PORT=8081
+      - MODE=grpc
+      - QUERY_SERVICE_ENDPOINT=committer-query-service:7001
+      - DEFAULT_MSP_ID=Org1MSP
+    volumes:
+      - ./config/bank_a.yaml:/root/config/config.yaml:ro
+      - ./crypto/bank_a:/root/crypto/bank_a:ro
+    networks:
+      - fabric-x-network
+
+  # 3. Commercial Bank B Endorser Client
+  x-client-bank-b:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: x-client-bank-b
+    ports:
+      - "8082:8082"
+    environment:
+      - PORT=8082
+      - MODE=grpc
+      - QUERY_SERVICE_ENDPOINT=committer-query-service:7001
+      - DEFAULT_MSP_ID=Org2MSP
+    volumes:
+      - ./config/bank_b.yaml:/root/config/config.yaml:ro
+      - ./crypto/bank_b:/root/crypto/bank_b:ro
+    networks:
+      - fabric-x-network
+
+networks:
+  # External network created by fabric-x-samples/devnet (usually named "fabric-x_default")
+  fabric-x-network:
+    name: fabric-x_default
+    external: true

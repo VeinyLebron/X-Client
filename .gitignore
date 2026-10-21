@@ -1,0 +1,38 @@
+# Binaries and build artifacts
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+x-client
+
+# Test and coverage artifacts
+*.test
+*.out
+coverage.html
+profile.cov
+
+# Logs and temporary files
+*.log
+*.pid
+
+# IDE, Editor, and OS files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Sensitive crypto materials (private keys, certificates generated per-environment)
+crypto/**/*.key
+crypto/**/*_sk
+crypto/**/*.crt
+crypto/**/*.pem
+!crypto/**/README.md
+!crypto/**/.gitkeep
+
+# Environment and local overrides
+*.env.local
+.env
