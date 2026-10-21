@@ -116,33 +116,10 @@ When any endpoint is invoked, X-Client executes the operation and returns the **
 
 A common point of confusion is why calling `POST /api/v1/wallets` returns a success payload with `status: "ENDORSED"`, but an immediate `GET /api/v1/wallets/WA` returns `"wallet WA does not exist"`.
 
-### Traditional Databases vs. Fabric-X
-- **In a Traditional Web App**: Calling `POST /wallets` immediately runs `INSERT INTO wallets ...` on PostgreSQL. The row exists in the database as soon as the HTTP request completes.
-- **In Hyperledger Fabric & Fabric-X**: Direct database writes during an API call are **strictly forbidden**. Nodes follow the **Execute $\rightarrow$ Order $\rightarrow$ Validate** architecture.
-
-### The "Signed Check" Analogy
 When you invoke any mutation endpoint on `X-Client`, `X-Client` acts as the **Endorser**:
 1. It simulates the operation against the current ledger snapshot.
 2. It constructs the exact **Read/Write Set** of proposed changes.
 3. It cryptographically signs the Read/Write set with the organization's ECDSA private key.
-
-> **Analogy**: The Endorser has drafted and signed an **official bank check**. Handing you a signed check is **not** the same as depositing it into the bank account. Until that check is brought to the Orderer and committed, PostgreSQL has not been updated!
-
-### The 3-Step Lifecycle
-
-```
-  Step 1: ENDORSE (Simulation)          Step 2: ORDER                 Step 3: COMMIT
- ┌───────────────────────────┐    ┌─────────────────────────┐    ┌─────────────────────┐
- │       Endorser            │    │      Arma Orderer       │    │      Committer      │
- │                           │    │                         │    │                     │
- │ Checks rules against DB   │ ─> │ Takes signed proposals  │ ─> │ Verifies signatures │ ─> Writes to
- │ Builds Read/Write Set     │    │ from all required orgs  │    │ Checks MVCC version │    PostgreSQL
- │ Signs with Private Key    │    │ Packages into a Block   │    │ Inserts rows into DB│
- └───────────────────────────┘    └─────────────────────────┘    └─────────────────────┘
-       ▲                                                                    │
-       │                                                                    ▼
- [ What X-Client provides ]                                        [ What GET reads from ]
-```
 
 1. **Step 1 (Endorsement)**: Provided by `X-Client`. Simulates the rules and yields the signed Read/Write set proposal.
 2. **Step 2 (Ordering)**: The client or application forwards the signed envelope to the **Arma Orderer** (`localhost:7050`), which sequences transactions into blocks.
@@ -300,3 +277,5 @@ curl -X POST http://localhost:8080/api/v1/movements/T2001/verify \
 curl http://localhost:8080/api/v1/supply \
   -H "X-Caller-MSP: CentralBankMSP"
 ```
+For SETUP reference:
+      [SETUP.md](SETUP.md)
