@@ -32,6 +32,7 @@ crypto/**/*.crt
 crypto/**/*.pem
 !crypto/**/README.md
 !crypto/**/.gitkeep
+README1.md
 
 # Environment and local overrides
 *.env.local
