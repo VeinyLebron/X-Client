@@ -4,7 +4,7 @@ This guide walks through setting up the complete end-to-end environment from scr
 
 ---
 
-## 1. Architectural Overview: Who Spins Up What?
+## 1. Architectural Overview:
 
 Before starting, it is crucial to understand the division of labor between the **Fabric-X Sample Network** and **X-Client**:
 
