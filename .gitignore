@@ -33,6 +33,7 @@ crypto/**/*.pem
 !crypto/**/README.md
 !crypto/**/.gitkeep
 README1.md
+RUNBOOK.md
 docs/ARCHITECTURE.md
 docs/CONFIGURATION.md
 docs/POLICIES.md
