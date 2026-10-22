@@ -1,68 +1,80 @@
-version: '3.8'
+# One X-Client per organization, joined to the fabric-x-samples/devnet-3org network
+# ("fabric-x"). Start the devnet with `make start-3org` and run ./scripts/copy-crypto.sh first.
+#
+# Each container mounts only its own private keys plus the public CA certificates.
+# The Central Bank co-signs every transaction; banks reach it at x-client-centralbank:8080.
 
-# Docker Compose deployment for all 3 Organization Endorser Clients
-# Joins the Fabric-X sample network ("fabric-x_default" or "devnet_default")
+x-common: &common
+  build:
+    context: .
+    dockerfile: Dockerfile
+  restart: unless-stopped
+  # Run as the host user so the mounted keys (mode 600) are readable, as devnet does.
+  user: "${UID:-1000}:${GID:-1000}"
+  networks:
+    - fabric-x
+
+x-routers: &routers
+  ROUTER1: orderer-party1-router:7050
+  ROUTER2: orderer-party2-router:7150
+  ROUTER3: orderer-party3-router:7250
+  ROUTER4: orderer-party4-router:7350
 
 services:
-  # 1. Central Bank Endorser Client
   x-client-centralbank:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    <<: *common
     container_name: x-client-centralbank
+    command: ["-config", "/app/config/centralbank.yaml"]
     ports:
       - "8080:8080"
     environment:
-      - PORT=8080
-      - MODE=grpc
-      - QUERY_SERVICE_ENDPOINT=committer-query-service:7001
-      - DEFAULT_MSP_ID=CentralBankMSP
+      <<: *routers
+      PORT: "8080"
+      QS_ENDPOINT: committer-cb-query-service:7001
+      SIDECAR_ENDPOINT: committer-cb-sidecar:4001
+      PEER_ORG1: http://x-client-bank-a:8081
+      PEER_ORG2: http://x-client-bank-b:8082
     volumes:
-      - ./config/centralbank.yaml:/root/config/config.yaml:ro
-      - ./crypto/centralbank:/root/crypto/centralbank:ro
-    networks:
-      - fabric-x-network
+      - ./crypto/centralbank:/app/crypto/centralbank:ro
+      - ./crypto/cas:/app/crypto/cas:ro
+      - ./crypto/orderer-tls:/app/crypto/orderer-tls:ro
 
-  # 2. Commercial Bank A Endorser Client
   x-client-bank-a:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    <<: *common
     container_name: x-client-bank-a
+    command: ["-config", "/app/config/bank_a.yaml"]
     ports:
       - "8081:8081"
     environment:
-      - PORT=8081
-      - MODE=grpc
-      - QUERY_SERVICE_ENDPOINT=committer-query-service:7001
-      - DEFAULT_MSP_ID=Org1MSP
+      <<: *routers
+      PORT: "8081"
+      QS_ENDPOINT: committer-query-service:7001
+      SIDECAR_ENDPOINT: committer-sidecar:4001
+      PEER_CB: http://x-client-centralbank:8080
     volumes:
-      - ./config/bank_a.yaml:/root/config/config.yaml:ro
-      - ./crypto/bank_a:/root/crypto/bank_a:ro
-    networks:
-      - fabric-x-network
+      - ./crypto/bank_a:/app/crypto/bank_a:ro
+      - ./crypto/cas:/app/crypto/cas:ro
+      - ./crypto/orderer-tls:/app/crypto/orderer-tls:ro
 
-  # 3. Commercial Bank B Endorser Client
   x-client-bank-b:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    <<: *common
     container_name: x-client-bank-b
+    command: ["-config", "/app/config/bank_b.yaml"]
     ports:
       - "8082:8082"
     environment:
-      - PORT=8082
-      - MODE=grpc
-      - QUERY_SERVICE_ENDPOINT=committer-query-service:7001
-      - DEFAULT_MSP_ID=Org2MSP
+      <<: *routers
+      PORT: "8082"
+      QS_ENDPOINT: committer-org2-query-service:7001
+      SIDECAR_ENDPOINT: committer-org2-sidecar:4001
+      PEER_CB: http://x-client-centralbank:8080
     volumes:
-      - ./config/bank_b.yaml:/root/config/config.yaml:ro
-      - ./crypto/bank_b:/root/crypto/bank_b:ro
-    networks:
-      - fabric-x-network
+      - ./crypto/bank_b:/app/crypto/bank_b:ro
+      - ./crypto/cas:/app/crypto/cas:ro
+      - ./crypto/orderer-tls:/app/crypto/orderer-tls:ro
 
 networks:
-  # External network created by fabric-x-samples/devnet (usually named "fabric-x_default")
-  fabric-x-network:
-    name: fabric-x_default
+  # Created by devnet-3org (compose.yaml: networks.fabric-x.name = fabric-x).
+  fabric-x:
+    name: fabric-x
     external: true

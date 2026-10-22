@@ -1,133 +1,109 @@
+// Package simulator executes contract logic against committed state and records the
+// reads and writes as Fabric-X TxNamespaces. A simulator is used by a single request.
 package simulator
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"slices"
+	"fmt"
 	"sort"
-	"sync"
+	"strings"
+
+	"github.com/hyperledger/fabric-x-common/api/applicationpb"
 
 	"x-client/pkg/models"
 	"x-client/pkg/store"
 )
 
-type readOp struct {
-	key string
-	ver *uint64
+type write struct {
+	val []byte // nil deletes the key
 }
 
-type writeOp struct {
-	key string
-	val []byte
+type nsState struct {
+	reads  map[string]*uint64 // key -> version read (nil: key absent)
+	writes map[string]write
 }
 
-type nsSimulator struct {
-	ns      string
-	reads   []readOp
-	writes  []writeOp
-	deletes []string
-}
-
-// MultiNamespaceSimulator manages simulation state across multiple Fabric-X namespaces.
+// MultiNamespaceSimulator records reads and writes across Fabric-X namespaces.
 type MultiNamespaceSimulator struct {
 	ctx        context.Context
 	store      store.Store
-	mu         sync.Mutex
-	namespaces map[string]*nsSimulator
+	namespaces map[string]*nsState
 }
 
 func NewMultiNamespaceSimulator(ctx context.Context, s store.Store) *MultiNamespaceSimulator {
 	return &MultiNamespaceSimulator{
 		ctx:        ctx,
 		store:      s,
-		namespaces: make(map[string]*nsSimulator),
+		namespaces: make(map[string]*nsState),
 	}
 }
 
-func (s *MultiNamespaceSimulator) getNS(ns string) *nsSimulator {
-	if sim, ok := s.namespaces[ns]; ok {
-		return sim
+func (s *MultiNamespaceSimulator) ns(name string) *nsState {
+	st, ok := s.namespaces[name]
+	if !ok {
+		st = &nsState{reads: make(map[string]*uint64), writes: make(map[string]write)}
+		s.namespaces[name] = st
 	}
-	sim := &nsSimulator{
-		ns: ns,
-	}
-	s.namespaces[ns] = sim
-	return sim
+	return st
 }
 
-// Get reads key in namespace. It checks buffered writes first, then queries the store.
+// recordRead keeps the first version observed for key.
+func (st *nsState) recordRead(key string, ver *uint64) {
+	if _, ok := st.reads[key]; !ok {
+		st.reads[key] = ver
+	}
+}
+
+// Get reads key, returning this transaction's own pending write if there is one.
+// Like the fabric-x-sdk simulation store, a deleted key is not recorded as a read.
 func (s *MultiNamespaceSimulator) Get(namespace, key string) ([]byte, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	sim := s.getNS(namespace)
-
-	// Check if deleted in this tx
-	if slices.Contains(sim.deletes, key) {
-		return nil, nil
+	st := s.ns(namespace)
+	if w, ok := st.writes[key]; ok {
+		return bytes.Clone(w.val), nil
 	}
 
-	// Check buffered writes
-	idx := slices.IndexFunc(sim.writes, func(w writeOp) bool { return w.key == key })
-	if idx >= 0 {
-		return sim.writes[idx].val, nil
-	}
-
-	// Query store
-	val, ver, err := s.store.GetRow(s.ctx, namespace, key)
+	rows, err := s.store.GetRows(s.ctx, namespace, []string{key})
 	if err != nil {
 		return nil, err
 	}
-
-	// Record read (first read only)
-	if !slices.ContainsFunc(sim.reads, func(r readOp) bool { return r.key == key }) {
-		sim.reads = append(sim.reads, readOp{key: key, ver: ver})
+	row, ok := rows[key]
+	switch {
+	case !ok:
+		st.recordRead(key, nil)
+		return nil, nil
+	case row.Deleted:
+		return nil, nil
+	default:
+		v := row.Version
+		st.recordRead(key, &v)
+		return row.Value, nil
 	}
-
-	return val, nil
 }
 
-// Put writes key in namespace.
+// Put writes key. An empty value deletes it.
 func (s *MultiNamespaceSimulator) Put(namespace, key string, val []byte) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	sim := s.getNS(namespace)
-
-	// Remove from deletes if re-added
-	if dIdx := slices.Index(sim.deletes, key); dIdx >= 0 {
-		sim.deletes = append(sim.deletes[:dIdx], sim.deletes[dIdx+1:]...)
+	if key == "" {
+		return fmt.Errorf("empty key in namespace %s", namespace)
 	}
-
-	idx := slices.IndexFunc(sim.writes, func(w writeOp) bool { return w.key == key })
-	if idx >= 0 {
-		sim.writes[idx].val = bytes.Clone(val)
-		return nil
+	if len(val) == 0 {
+		return s.Del(namespace, key)
 	}
-	sim.writes = append(sim.writes, writeOp{key: key, val: bytes.Clone(val)})
+	s.ns(namespace).writes[key] = write{val: bytes.Clone(val)}
 	return nil
 }
 
-// Del deletes key in namespace.
+// Del deletes key.
 func (s *MultiNamespaceSimulator) Del(namespace, key string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	sim := s.getNS(namespace)
-
-	// Remove from writes if present
-	if idx := slices.IndexFunc(sim.writes, func(w writeOp) bool { return w.key == key }); idx >= 0 {
-		sim.writes = append(sim.writes[:idx], sim.writes[idx+1:]...)
+	if key == "" {
+		return fmt.Errorf("empty key in namespace %s", namespace)
 	}
-
-	if !slices.Contains(sim.deletes, key) {
-		sim.deletes = append(sim.deletes, key)
-	}
+	s.ns(namespace).writes[key] = write{}
 	return nil
 }
 
-// PutJSON is a convenience helper to serialize and write JSON structs.
+// PutJSON serializes v and writes it.
 func (s *MultiNamespaceSimulator) PutJSON(namespace, key string, v any) error {
 	data, err := json.Marshal(v)
 	if err != nil {
@@ -136,136 +112,109 @@ func (s *MultiNamespaceSimulator) PutJSON(namespace, key string, v any) error {
 	return s.Put(namespace, key, data)
 }
 
-// GetJSON is a convenience helper to read and unmarshal JSON structs.
+// GetJSON reads key into v, reporting whether the key exists.
 func (s *MultiNamespaceSimulator) GetJSON(namespace, key string, v any) (bool, error) {
 	data, err := s.Get(namespace, key)
-	if err != nil {
+	if err != nil || len(data) == 0 {
 		return false, err
-	}
-	if len(data) == 0 {
-		return false, nil
 	}
 	return true, json.Unmarshal(data, v)
 }
 
-// ListPrefix finds keys by prefix in the store, factoring in local buffered writes.
+// ListPrefix returns live keys starting with prefix, including this transaction's writes.
+// Every committed key returned is recorded as a read.
 func (s *MultiNamespaceSimulator) ListPrefix(namespace, prefix string) (map[string][]byte, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	sim := s.getNS(namespace)
-
-	storeRows, err := s.store.ListPrefix(s.ctx, namespace, prefix)
+	st := s.ns(namespace)
+	rows, err := s.store.ListPrefix(s.ctx, namespace, prefix)
 	if err != nil {
 		return nil, err
 	}
 
-	result := make(map[string][]byte)
-	for k, row := range storeRows {
-		// Record read in simulator
-		if !slices.ContainsFunc(sim.reads, func(r readOp) bool { return r.key == k }) {
-			sim.reads = append(sim.reads, readOp{key: k, ver: row.Version})
-		}
+	result := make(map[string][]byte, len(rows))
+	for k, row := range rows {
+		v := row.Version
+		st.recordRead(k, &v)
 		result[k] = row.Value
 	}
-
-	// Apply buffered writes
-	for _, w := range sim.writes {
-		if len(w.key) >= len(prefix) && w.key[:len(prefix)] == prefix {
-			result[w.key] = w.val
+	for k, w := range st.writes {
+		if !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		if w.val == nil {
+			delete(result, k)
+		} else {
+			result[k] = w.val
 		}
 	}
-
-	// Remove deletes
-	for _, delKey := range sim.deletes {
-		delete(result, delKey)
-	}
-
 	return result, nil
 }
 
-// BuildReadWriteSets constructs the deterministic Fabric-X Read/Write sets.
-func (s *MultiNamespaceSimulator) BuildReadWriteSets() (map[string]models.NamespaceReadWriteSet, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	rwSets := make(map[string]models.NamespaceReadWriteSet)
-
-	for ns, sim := range s.namespaces {
-		nsVer, err := s.store.GetNamespaceVersion(s.ctx, ns)
-		if err != nil {
-			nsVer = 1
-		}
-
-		nsSet := models.NamespaceReadWriteSet{
-			Namespace:   ns,
-			NsVersion:   nsVer,
-			ReadsOnly:   make([]models.ReadRecord, 0),
-			ReadWrites:  make([]models.WriteRecord, 0),
-			BlindWrites: make([]models.WriteRecord, 0),
-		}
-
-		// Process reads
-		for _, r := range sim.reads {
-			// Check if also written
-			wIdx := slices.IndexFunc(sim.writes, func(w writeOp) bool { return w.key == r.key })
-			dIdx := slices.Index(sim.deletes, r.key)
-
-			if wIdx >= 0 {
-				// Read-Write
-				nsSet.ReadWrites = append(nsSet.ReadWrites, models.WriteRecord{
-					Key:     r.key,
-					Version: r.ver,
-					Value:   string(sim.writes[wIdx].val),
-				})
-			} else if dIdx >= 0 {
-				// Read and deleted: tombstone
-				nsSet.ReadWrites = append(nsSet.ReadWrites, models.WriteRecord{
-					Key:     r.key,
-					Version: r.ver,
-					Value:   "",
-				})
-			} else {
-				// Read only
-				nsSet.ReadsOnly = append(nsSet.ReadsOnly, models.ReadRecord{
-					Key:     r.key,
-					Version: r.ver,
-				})
-			}
-		}
-
-		// Process writes that were not read (blind writes)
-		for _, w := range sim.writes {
-			rIdx := slices.IndexFunc(sim.reads, func(r readOp) bool { return r.key == w.key })
-			if rIdx < 0 {
-				nsSet.BlindWrites = append(nsSet.BlindWrites, models.WriteRecord{
-					Key:   w.key,
-					Value: string(w.val),
-				})
-			}
-		}
-
-		// Process blind deletes (tombstones)
-		for _, dKey := range sim.deletes {
-			rIdx := slices.IndexFunc(sim.reads, func(r readOp) bool { return r.key == dKey })
-			if rIdx < 0 {
-				nsSet.BlindWrites = append(nsSet.BlindWrites, models.WriteRecord{
-					Key:   dKey,
-					Value: "",
-				})
-			}
-		}
-
-		// Sort keys deterministically
-		sort.Slice(nsSet.ReadsOnly, func(i, j int) bool { return nsSet.ReadsOnly[i].Key < nsSet.ReadsOnly[j].Key })
-		sort.Slice(nsSet.ReadWrites, func(i, j int) bool { return nsSet.ReadWrites[i].Key < nsSet.ReadWrites[j].Key })
-		sort.Slice(nsSet.BlindWrites, func(i, j int) bool { return nsSet.BlindWrites[i].Key < nsSet.BlindWrites[j].Key })
-
-		// Only include namespace if it participated in reads, writes, or deletes
-		if len(nsSet.ReadsOnly) > 0 || len(nsSet.ReadWrites) > 0 || len(nsSet.BlindWrites) > 0 {
-			rwSets[ns] = nsSet
+// BuildTxNamespaces returns the recorded read/write sets as Fabric-X TxNamespaces,
+// sorted by namespace and key so every endorser derives identical bytes.
+func (s *MultiNamespaceSimulator) BuildTxNamespaces() ([]*applicationpb.TxNamespace, error) {
+	names := make([]string, 0, len(s.namespaces))
+	for name, st := range s.namespaces {
+		if len(st.reads) > 0 || len(st.writes) > 0 {
+			names = append(names, name)
 		}
 	}
+	sort.Strings(names)
 
-	return rwSets, nil
+	out := make([]*applicationpb.TxNamespace, 0, len(names))
+	for _, name := range names {
+		st := s.namespaces[name]
+		nsVer, err := s.store.NamespaceVersion(s.ctx, name)
+		if err != nil {
+			return nil, err
+		}
+		txNs := &applicationpb.TxNamespace{NsId: name, NsVersion: nsVer}
+
+		for _, key := range sortedKeys(st.reads) {
+			ver := st.reads[key]
+			if w, written := st.writes[key]; written {
+				txNs.ReadWrites = append(txNs.ReadWrites, &applicationpb.ReadWrite{
+					Key: []byte(key), Version: ver, Value: w.val,
+				})
+			} else {
+				txNs.ReadsOnly = append(txNs.ReadsOnly, &applicationpb.Read{Key: []byte(key), Version: ver})
+			}
+		}
+		for _, key := range sortedKeys(st.writes) {
+			if _, read := st.reads[key]; !read {
+				txNs.BlindWrites = append(txNs.BlindWrites, &applicationpb.Write{
+					Key: []byte(key), Value: st.writes[key].val,
+				})
+			}
+		}
+		out = append(out, txNs)
+	}
+	return out, nil
+}
+
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// View renders TxNamespaces as JSON-friendly read/write sets.
+func View(nss []*applicationpb.TxNamespace) map[string]models.NamespaceReadWriteSet {
+	out := make(map[string]models.NamespaceReadWriteSet, len(nss))
+	for _, ns := range nss {
+		v := models.NamespaceReadWriteSet{Namespace: ns.NsId, NsVersion: ns.NsVersion}
+		for _, r := range ns.ReadsOnly {
+			v.ReadsOnly = append(v.ReadsOnly, models.ReadRecord{Key: string(r.Key), Version: r.Version})
+		}
+		for _, rw := range ns.ReadWrites {
+			v.ReadWrites = append(v.ReadWrites, models.WriteRecord{Key: string(rw.Key), Version: rw.Version, Value: string(rw.Value)})
+		}
+		for _, w := range ns.BlindWrites {
+			v.BlindWrites = append(v.BlindWrites, models.WriteRecord{Key: string(w.Key), Value: string(w.Value)})
+		}
+		out[ns.NsId] = v
+	}
+	return out
 }

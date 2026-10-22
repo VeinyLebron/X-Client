@@ -1,47 +1,58 @@
 #!/usr/bin/env bash
-# Helper script to copy crypto material from fabric-x-samples/devnet into X-Client
+# Copy the crypto material X-Client needs from fabric-x-samples/devnet-3org (after `make init`).
+#
+# Per organization (crypto/<org>/):
+#   cert.pem, priv_sk          signing identity (User1)       -> endorsements, envelopes
+#   tls/ca.crt                 the org's TLS CA               -> verify its committer (QS + sidecar)
+#   tls/client.crt, client.key the user's TLS client keypair  -> mTLS to committer and routers
+# Shared, public only:
+#   cas/<MSP>.pem              each org's MSP CA              -> authenticate peer X-Client requests
+#   orderer-tls/*.pem          orderer TLS CAs                -> verify the Arma routers
 
 set -euo pipefail
 
-DEVNET_DIR="${1:-$HOME/Projects/repos-bench/fabric-x-samples/devnet}"
+DEVNET_DIR="${1:-$HOME/Projects/repos-bench/fabric-x-samples/devnet-3org}"
 CRYPTO_DIR="$DEVNET_DIR/crypto"
 
-if [ ! -d "$CRYPTO_DIR" ]; then
-    echo "Error: Devnet crypto directory not found at $CRYPTO_DIR"
-    echo "Usage: ./scripts/copy-crypto.sh [path-to-fabric-x-samples/devnet]"
+if [ ! -d "$CRYPTO_DIR/peerOrganizations/centralbank.example.com" ]; then
+    echo "Error: devnet-3org crypto not found at $CRYPTO_DIR (run 'make init' there first)."
+    echo "Usage: ./scripts/copy-crypto.sh [path-to-fabric-x-samples/devnet-3org]"
     exit 1
 fi
 
 DEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/crypto"
+echo "Copying crypto material from: $CRYPTO_DIR"
+echo "Destination directory:        $DEST_DIR"
 
-echo "Copying crypto materials from: $CRYPTO_DIR"
-echo "Destination directory: $DEST_DIR"
+mkdir -p "$DEST_DIR/cas" "$DEST_DIR/orderer-tls"
 
-# 1. Bank A (Org1MSP)
-echo "Setting up Bank A (Org1MSP)..."
-mkdir -p "$DEST_DIR/bank_a"
-cp "$CRYPTO_DIR"/peerOrganizations/org1.example.com/users/User1@org1.example.com/msp/signcerts/*-cert.pem "$DEST_DIR/bank_a/cert.pem"
-cp "$CRYPTO_DIR"/peerOrganizations/org1.example.com/users/User1@org1.example.com/msp/keystore/*_sk "$DEST_DIR/bank_a/priv_sk"
-cp "$CRYPTO_DIR"/peerOrganizations/org1.example.com/users/User1@org1.example.com/tls/ca.crt "$DEST_DIR/bank_a/ca.crt"
-cp "$CRYPTO_DIR"/peerOrganizations/org1.example.com/users/User1@org1.example.com/tls/client.crt "$DEST_DIR/bank_a/tls_client.crt"
-cp "$CRYPTO_DIR"/peerOrganizations/org1.example.com/users/User1@org1.example.com/tls/client.key "$DEST_DIR/bank_a/tls_client.key"
+copy_org() {
+    local dir="$1" domain="$2" msp="$3"
+    local org="$CRYPTO_DIR/peerOrganizations/$domain"
+    local user="$org/users/User1@$domain"
+    echo "  $msp -> crypto/$dir"
 
-# 2. Bank B (Org2MSP)
-echo "Setting up Bank B (Org2MSP)..."
-mkdir -p "$DEST_DIR/bank_b"
-cp "$CRYPTO_DIR"/peerOrganizations/org2.example.com/users/User1@org2.example.com/msp/signcerts/*-cert.pem "$DEST_DIR/bank_b/cert.pem"
-cp "$CRYPTO_DIR"/peerOrganizations/org2.example.com/users/User1@org2.example.com/msp/keystore/*_sk "$DEST_DIR/bank_b/priv_sk"
-cp "$CRYPTO_DIR"/peerOrganizations/org2.example.com/users/User1@org2.example.com/tls/ca.crt "$DEST_DIR/bank_b/ca.crt"
-cp "$CRYPTO_DIR"/peerOrganizations/org2.example.com/users/User1@org2.example.com/tls/client.crt "$DEST_DIR/bank_b/tls_client.crt"
-cp "$CRYPTO_DIR"/peerOrganizations/org2.example.com/users/User1@org2.example.com/tls/client.key "$DEST_DIR/bank_b/tls_client.key"
+    mkdir -p "$DEST_DIR/$dir/tls"
+    # Files written by earlier versions of this script.
+    rm -f "$DEST_DIR/$dir/ca.crt" "$DEST_DIR/$dir/tls_client.crt" "$DEST_DIR/$dir/tls_client.key"
 
-# 3. Central Bank (CentralBankMSP / Admin)
-echo "Setting up Central Bank (CentralBankMSP)..."
-mkdir -p "$DEST_DIR/centralbank"
-cp "$CRYPTO_DIR"/peerOrganizations/org1.example.com/users/Admin@org1.example.com/msp/signcerts/Admin@org1.example.com-cert.pem "$DEST_DIR/centralbank/cert.pem"
-cp "$CRYPTO_DIR"/peerOrganizations/org1.example.com/users/Admin@org1.example.com/msp/keystore/*_sk "$DEST_DIR/centralbank/priv_sk"
-cp "$CRYPTO_DIR"/peerOrganizations/org1.example.com/users/User1@org1.example.com/tls/ca.crt "$DEST_DIR/centralbank/ca.crt"
-cp "$CRYPTO_DIR"/peerOrganizations/org1.example.com/users/User1@org1.example.com/tls/client.crt "$DEST_DIR/centralbank/tls_client.crt"
-cp "$CRYPTO_DIR"/peerOrganizations/org1.example.com/users/User1@org1.example.com/tls/client.key "$DEST_DIR/centralbank/tls_client.key"
+    cp "$user"/msp/signcerts/*.pem "$DEST_DIR/$dir/cert.pem"
+    cp "$user"/msp/keystore/*_sk   "$DEST_DIR/$dir/priv_sk"
+    cp "$user/tls/ca.crt"          "$DEST_DIR/$dir/tls/ca.crt"
+    cp "$user/tls/client.crt"      "$DEST_DIR/$dir/tls/client.crt"
+    cp "$user/tls/client.key"      "$DEST_DIR/$dir/tls/client.key"
+    chmod 600 "$DEST_DIR/$dir/priv_sk" "$DEST_DIR/$dir/tls/client.key"
 
-echo "All crypto materials copied successfully!"
+    cp "$org/msp/cacerts/"*.pem "$DEST_DIR/cas/$msp.pem"
+}
+
+copy_org centralbank centralbank.example.com CentralBankMSP
+copy_org bank_a      org1.example.com        Org1MSP
+copy_org bank_b      org2.example.com        Org2MSP
+
+for n in 1 2 3 4; do
+    cp "$CRYPTO_DIR/ordererOrganizations/orderer-org-$n/msp/tlscacerts/tlsca.orderer-org-$n-cert.pem" \
+       "$DEST_DIR/orderer-tls/orderer-org-$n.pem"
+done
+
+echo "All crypto material copied."

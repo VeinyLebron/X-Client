@@ -1,3 +1,5 @@
+// Package endorser holds an organization's signing identity and produces Fabric-X
+// namespace endorsements.
 package endorser
 
 import (
@@ -6,166 +8,221 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
-	"encoding/asn1"
-	"encoding/hex"
-	"encoding/json"
+	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"os"
-	"sync"
 	"time"
 
-	"x-client/pkg/models"
+	"github.com/hyperledger/fabric-lib-go/bccsp/utils"
+	"github.com/hyperledger/fabric-protos-go-apiv2/msp"
+	"github.com/hyperledger/fabric-x-common/api/applicationpb"
+	"github.com/hyperledger/fabric-x-common/api/msppb"
+	"google.golang.org/protobuf/proto"
 )
 
-type ecdsaSignature struct {
-	R, S *big.Int
-}
-
-// Config holds endorser crypto configuration.
+// Config locates an organization's signing certificate and private key.
 type Config struct {
 	MSPID    string `yaml:"msp_id"`
 	CertPath string `yaml:"cert_path"`
 	KeyPath  string `yaml:"key_path"`
 }
 
-// Endorser manages endorsement signing for a single organization.
-type Endorser struct {
-	mspID      string
-	certPEM    []byte
-	privateKey *ecdsa.PrivateKey
+// Identity is an ECDSA signing identity of one MSP. It implements the fabric-x-sdk Signer.
+type Identity struct {
+	mspID   string
+	certPEM []byte
+	cert    *x509.Certificate
+	key     *ecdsa.PrivateKey
 }
 
-// New creates an Endorser. If cert/key paths are not provided or don't exist,
-// it generates an in-memory ECDSA P-256 keypair for simulation.
-func New(cfg Config) (*Endorser, error) {
-	mspID := cfg.MSPID
-	if mspID == "" {
-		mspID = "Org1MSP"
+// Load reads the identity's certificate and key. Unlike the previous behaviour it never
+// falls back to a random key: a misconfigured identity is a startup error.
+func Load(cfg Config) (*Identity, error) {
+	if cfg.MSPID == "" {
+		return nil, errors.New("msp_id is required")
 	}
-
-	var privKey *ecdsa.PrivateKey
-	var certPEM []byte
-
-	if cfg.KeyPath != "" && cfg.CertPath != "" {
-		if kData, err := os.ReadFile(cfg.KeyPath); err == nil {
-			block, _ := pem.Decode(kData)
-			if block != nil {
-				if parsedKey, err := x509.ParsePKCS8PrivateKey(block.Bytes); err == nil {
-					if ecKey, ok := parsedKey.(*ecdsa.PrivateKey); ok {
-						privKey = ecKey
-					}
-				} else if ecKey, err := x509.ParseECPrivateKey(block.Bytes); err == nil {
-					privKey = ecKey
-				}
-			}
-		}
-		if cData, err := os.ReadFile(cfg.CertPath); err == nil {
-			certPEM = cData
-		}
+	certPEM, err := os.ReadFile(cfg.CertPath)
+	if err != nil {
+		return nil, fmt.Errorf("%s: read certificate: %w", cfg.MSPID, err)
 	}
-
-	if privKey == nil {
-		var err error
-		privKey, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-		if err != nil {
-			return nil, fmt.Errorf("generate fallback key: %w", err)
-		}
-		certPEM = []byte(fmt.Sprintf("-----BEGIN CERTIFICATE-----\n[SIMULATED CERTIFICATE FOR %s]\n-----END CERTIFICATE-----\n", mspID))
+	cert, err := parseCert(certPEM)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", cfg.MSPID, err)
 	}
+	keyPEM, err := os.ReadFile(cfg.KeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("%s: read private key: %w", cfg.MSPID, err)
+	}
+	key, err := parseKey(keyPEM)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", cfg.MSPID, err)
+	}
+	pub, ok := cert.PublicKey.(*ecdsa.PublicKey)
+	if !ok || !pub.Equal(&key.PublicKey) {
+		return nil, fmt.Errorf("%s: private key does not match certificate %s", cfg.MSPID, cfg.CertPath)
+	}
+	return &Identity{mspID: cfg.MSPID, certPEM: certPEM, cert: cert, key: key}, nil
+}
 
-	return &Endorser{
-		mspID:      mspID,
-		certPEM:    certPEM,
-		privateKey: privKey,
+// Generate creates a throwaway self-signed identity. Only for in-memory mode and tests:
+// the network will not accept its signatures.
+func Generate(mspID string) (*Identity, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(time.Now().UnixNano()),
+		Subject:               pkix.Name{CommonName: "ephemeral." + mspID, Organization: []string{mspID}},
+		NotBefore:             time.Now().Add(-time.Minute),
+		NotAfter:              time.Now().Add(365 * 24 * time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		return nil, err
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		return nil, err
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	return &Identity{mspID: mspID, certPEM: certPEM, cert: cert, key: key}, nil
+}
+
+func parseCert(certPEM []byte) (*x509.Certificate, error) {
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		return nil, errors.New("certificate is not PEM encoded")
+	}
+	return x509.ParseCertificate(block.Bytes)
+}
+
+func parseKey(keyPEM []byte) (*ecdsa.PrivateKey, error) {
+	block, _ := pem.Decode(keyPEM)
+	if block == nil {
+		return nil, errors.New("private key is not PEM encoded")
+	}
+	if k, err := x509.ParsePKCS8PrivateKey(block.Bytes); err == nil {
+		ec, ok := k.(*ecdsa.PrivateKey)
+		if !ok {
+			return nil, errors.New("private key is not ECDSA")
+		}
+		return ec, nil
+	}
+	return x509.ParseECPrivateKey(block.Bytes)
+}
+
+func (i *Identity) MSPID() string                  { return i.mspID }
+func (i *Identity) CertPEM() []byte                { return i.certPEM }
+func (i *Identity) Certificate() *x509.Certificate { return i.cert }
+
+// Sign hashes msg with SHA-256 and returns a low-S DER-encoded ECDSA signature, as
+// Fabric MSP verification expects.
+func (i *Identity) Sign(msg []byte) ([]byte, error) {
+	digest := sha256.Sum256(msg)
+	r, s, err := ecdsa.Sign(rand.Reader, i.key, digest[:])
+	if err != nil {
+		return nil, err
+	}
+	if s, err = utils.ToLowS(&i.key.PublicKey, s); err != nil {
+		return nil, err
+	}
+	return utils.MarshalECDSASignature(r, s)
+}
+
+// Serialize returns the identity as a Fabric SerializedIdentity, used as the envelope creator.
+func (i *Identity) Serialize() ([]byte, error) {
+	return proto.Marshal(&msp.SerializedIdentity{Mspid: i.mspID, IdBytes: i.certPEM})
+}
+
+// EndorseNamespace signs one namespace of transaction txID. Fabric-X endorsements cover
+// the ASN.1 encoding of the namespace together with the transaction ID and metadata.
+func (i *Identity) EndorseNamespace(ns *applicationpb.TxNamespace, txID string, metadata [][]byte) (*applicationpb.EndorsementWithIdentity, error) {
+	msg, err := ns.ASN1Marshal(txID, metadata)
+	if err != nil {
+		return nil, err
+	}
+	sig, err := i.Sign(msg)
+	if err != nil {
+		return nil, fmt.Errorf("sign namespace %s: %w", ns.NsId, err)
+	}
+	return &applicationpb.EndorsementWithIdentity{
+		Endorsement: sig,
+		Identity:    msppb.NewIdentity(i.mspID, i.certPEM),
 	}, nil
 }
 
-func (e *Endorser) MSPID() string {
-	return e.mspID
+// VerifyEndorsement checks that e is a valid signature over namespace ns of txID by the
+// certificate it carries. It does not check that the certificate belongs to its MSP.
+func VerifyEndorsement(ns *applicationpb.TxNamespace, txID string, metadata [][]byte, e *applicationpb.EndorsementWithIdentity) error {
+	cert, err := parseCert(e.GetIdentity().GetCertificate())
+	if err != nil {
+		return err
+	}
+	pub, ok := cert.PublicKey.(*ecdsa.PublicKey)
+	if !ok {
+		return errors.New("endorser key is not ECDSA")
+	}
+	msg, err := ns.ASN1Marshal(txID, metadata)
+	if err != nil {
+		return err
+	}
+	r, s, err := utils.UnmarshalECDSASignature(e.Endorsement)
+	if err != nil {
+		return err
+	}
+	if low, err := utils.IsLowS(pub, s); err != nil || !low {
+		return errors.New("signature is not low-S")
+	}
+	digest := sha256.Sum256(msg)
+	if !ecdsa.Verify(pub, digest[:], r, s) {
+		return fmt.Errorf("invalid signature on namespace %s", ns.NsId)
+	}
+	return nil
 }
 
-// SignReadWriteSet signs the serialized Read/Write sets using SHA-256 and ECDSA.
-func (e *Endorser) SignReadWriteSet(rwSets map[string]models.NamespaceReadWriteSet) (*models.EndorsementSignature, error) {
-	payload, err := json.Marshal(rwSets)
-	if err != nil {
-		return nil, fmt.Errorf("marshal rwsets: %w", err)
-	}
+// ─── Registry ────────────────────────────────────────────────────────────────
 
-	digest := sha256.Sum256(payload)
-
-	r, s, err := ecdsa.Sign(rand.Reader, e.privateKey, digest[:])
-	if err != nil {
-		return nil, fmt.Errorf("ecdsa sign: %w", err)
-	}
-
-	// Low-S standard (BIP 62 / Fabric requirement)
-	curveOrder := e.privateKey.Curve.Params().N
-	halfOrder := new(big.Int).Rsh(curveOrder, 1)
-	if s.Cmp(halfOrder) > 0 {
-		s.Sub(curveOrder, s)
-	}
-
-	sigBytes, err := asn1.Marshal(ecdsaSignature{R: r, S: s})
-	if err != nil {
-		return nil, fmt.Errorf("asn1 marshal signature: %w", err)
-	}
-
-	return &models.EndorsementSignature{
-		EndorserMSP: e.mspID,
-		Identity:    string(e.certPEM),
-		Signature:   hex.EncodeToString(sigBytes),
-		Timestamp:   time.Now().UTC().Format(time.RFC3339),
-	}, nil
-}
-
-// --- Registry: Manages multiple Endorser identities (e.g. 3 orgs) ---
-
+// Registry holds the identities this process may sign with. Unknown MSPs are never
+// created on demand.
 type Registry struct {
-	mu           sync.RWMutex
 	defaultMSPID string
-	endorsers    map[string]*Endorser
+	identities   map[string]*Identity
 }
 
 func NewRegistry(defaultMSPID string) *Registry {
-	if defaultMSPID == "" {
-		defaultMSPID = models.CentralBankMSP
-	}
-	return &Registry{
-		defaultMSPID: defaultMSPID,
-		endorsers:    make(map[string]*Endorser),
+	return &Registry{defaultMSPID: defaultMSPID, identities: make(map[string]*Identity)}
+}
+
+func (r *Registry) Register(id *Identity) {
+	r.identities[id.MSPID()] = id
+	if r.defaultMSPID == "" {
+		r.defaultMSPID = id.MSPID()
 	}
 }
 
-func (r *Registry) DefaultMSPID() string {
-	return r.defaultMSPID
+func (r *Registry) DefaultMSPID() string { return r.defaultMSPID }
+
+// Get returns the identity for mspID.
+func (r *Registry) Get(mspID string) (*Identity, bool) {
+	id, ok := r.identities[mspID]
+	return id, ok
 }
 
-func (r *Registry) Register(e *Endorser) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.endorsers[e.MSPID()] = e
+// MSPIDs returns the MSPs this process holds keys for.
+func (r *Registry) MSPIDs() []string {
+	out := make([]string, 0, len(r.identities))
+	for id := range r.identities {
+		out = append(out, id)
+	}
+	return out
 }
 
-func (r *Registry) Get(mspID string) *Endorser {
-	r.mu.RLock()
-	if mspID == "" {
-		mspID = r.defaultMSPID
-	}
-	if e, ok := r.endorsers[mspID]; ok {
-		r.mu.RUnlock()
-		return e
-	}
-	r.mu.RUnlock()
-
-	// Lazily create an ephemeral signer for this MSP ID if not explicitly registered
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if e, ok := r.endorsers[mspID]; ok {
-		return e
-	}
-	e, _ := New(Config{MSPID: mspID})
-	r.endorsers[mspID] = e
-	return e
-}
+// Len returns the number of registered identities.
+func (r *Registry) Len() int { return len(r.identities) }

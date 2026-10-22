@@ -1,7 +1,7 @@
-version: '3.8'
+# Standalone X-Client: in-memory ledger, no Fabric-X network required.
+# For the 3-organization deployment against devnet-3org see docker-compose.3org.yaml.
 
 services:
-  # Fabric-X Endorser REST Client
   x-client:
     build:
       context: .
@@ -11,45 +11,9 @@ services:
       - "8080:8080"
     environment:
       - PORT=8080
-      - MODE=grpc
-      - QUERY_SERVICE_ENDPOINT=query-service:7001
-      - ENDORSER_MSP_ID=Org1MSP
-    depends_on:
-      - query-service
-    networks:
-      - fabric-x-net
-
-  # External Query Service (Committer / State DB frontend)
-  query-service:
-    image: ghcr.io/hyperledger/fabric-x-committer:1.0.5
-    container_name: query-service
-    ports:
-      - "7001:7001"
-    environment:
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - DB_USER=fabricx
-      - DB_PASSWORD=fabricx
-      - DB_NAME=fabricx
-      - LISTEN_ADDR=:7001
-    depends_on:
-      - postgres
-    networks:
-      - fabric-x-net
-
-  # PostgreSQL database for ledger world state
-  postgres:
-    image: postgres:15-alpine
-    container_name: fabricx-postgres
-    ports:
-      - "5432:5432"
-    environment:
-      - POSTGRES_USER=fabricx
-      - POSTGRES_PASSWORD=fabricx
-      - POSTGRES_DB=fabricx
-    networks:
-      - fabric-x-net
-
-networks:
-  fabric-x-net:
-    driver: bridge
+    command: ["-config", "/app/config/config.yaml"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10

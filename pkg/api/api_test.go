@@ -9,143 +9,137 @@ import (
 
 	"x-client/pkg/contract"
 	"x-client/pkg/endorser"
+	"x-client/pkg/engine"
+	"x-client/pkg/fabricx"
 	"x-client/pkg/models"
 	"x-client/pkg/store"
 )
 
-func setupTestServer(t *testing.T) (*Server, *store.InMemoryStore) {
-	svc := contract.NewCBDCService()
-	st := store.NewInMemoryStore()
+const salt = "secret-salt-16-chars-min"
+
+func newTestServer(t *testing.T, opts Options) http.Handler {
+	t.Helper()
+	svc := contract.NewCBDCService(contract.DefaultNamespaces())
+	mem := store.NewInMemoryStore()
 	reg := endorser.NewRegistry(models.CentralBankMSP)
-	server := NewServer(svc, st, reg)
-	return server, st
+	for _, msp := range []string{models.CentralBankMSP, "Org1MSP", "Org2MSP"} {
+		id, err := endorser.Generate(msp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reg.Register(id)
+	}
+	eng := engine.New(engine.Config{
+		Contract:  svc,
+		Store:     mem,
+		Registry:  reg,
+		Policies:  engine.DefaultPolicies(svc, []string{"Org1MSP", "Org2MSP"}),
+		Submitter: fabricx.LocalSubmitter{Store: mem},
+		Channel:   "mychannel",
+	})
+	if opts.DefaultMSP == "" {
+		opts.DefaultMSP = models.CentralBankMSP
+	}
+	return NewServer(svc, eng, opts).Handler()
 }
 
-func TestAPI_WalletAndMovementFlow(t *testing.T) {
-	server, st := setupTestServer(t)
-	handler := server.Handler()
+type call struct {
+	method, path, msp string
+	body              any
+	want              int
+}
 
-	// 1. Health check
-	{
-		req := httptest.NewRequest("GET", "/healthz", nil)
-		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, req)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("health check failed: %d", rec.Code)
-		}
+func do(t *testing.T, h http.Handler, c call) models.EndorsementResponse {
+	t.Helper()
+	var body bytes.Buffer
+	if c.body != nil {
+		_ = json.NewEncoder(&body).Encode(c.body)
+	}
+	req := httptest.NewRequest(c.method, c.path, &body)
+	if c.msp != "" {
+		req.Header.Set("X-Caller-MSP", c.msp)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != c.want {
+		t.Fatalf("%s %s: status %d, want %d: %s", c.method, c.path, rec.Code, c.want, rec.Body.String())
+	}
+	var resp models.EndorsementResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	return resp
+}
+
+func TestAPI_SetupGuideFlow(t *testing.T) {
+	h := newTestServer(t, Options{AllowCallerHeader: true})
+	cb := models.CentralBankMSP
+
+	do(t, h, call{"GET", "/healthz", "", nil, 200})
+	r := do(t, h, call{"POST", "/api/v1/wallets", cb, models.CreateWalletRequest{WalletID: "WA", OwnerMSP: "Org1MSP", ParticipantType: "bank"}, 200})
+	if r.Status != models.TxStatusCommitted || r.TxID == "" || len(r.Endorsements) == 0 {
+		t.Fatalf("create: %+v", r)
+	}
+	do(t, h, call{"POST", "/api/v1/wallets", cb, models.CreateWalletRequest{WalletID: "WB", OwnerMSP: "Org2MSP", ParticipantType: "bank"}, 200})
+	do(t, h, call{"POST", "/api/v1/wallets", cb, models.CreateWalletRequest{WalletID: "WB", OwnerMSP: "Org2MSP", ParticipantType: "bank"}, 409})
+
+	// Committed state is visible immediately.
+	if r := do(t, h, call{"GET", "/api/v1/wallets/WA", "", nil, 200}); r.Status != models.TxStatusQueried {
+		t.Fatalf("query: %+v", r)
 	}
 
-	// 2. Create Wallet WA via POST /api/v1/wallets
-	{
-		body, _ := json.Marshal(models.CreateWalletRequest{
-			WalletID:        "WA",
-			OwnerMSP:        "Org1MSP",
-			ParticipantType: models.ParticipantBank,
-		})
-		req := httptest.NewRequest("POST", "/api/v1/wallets", bytes.NewReader(body))
-		req.Header.Set("X-Caller-MSP", models.CentralBankMSP)
-		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, req)
+	do(t, h, call{"POST", "/api/v1/movements/mint", cb, models.MintCBDCRequest{WalletID: "WA", MovementID: "M1001", Amount: 1_000_000, Salt: salt}, 200})
+	do(t, h, call{"POST", "/api/v1/movements/mint", "Org1MSP", models.MintCBDCRequest{WalletID: "WA", MovementID: "M1002", Amount: 1, Salt: salt}, 403})
+	do(t, h, call{"POST", "/api/v1/movements/transfer", "Org1MSP", models.TransferCBDCRequest{FromWalletID: "WA", ToWalletID: "WB", MovementID: "T2001", Amount: 300_000, Salt: salt}, 200})
+	do(t, h, call{"POST", "/api/v1/movements/transfer", "Org1MSP", models.TransferCBDCRequest{FromWalletID: "WA", ToWalletID: "WB", MovementID: "T2002", Amount: 900_000, Salt: salt}, 422})
+	do(t, h, call{"POST", "/api/v1/wallets/WB/consolidate", "Org2MSP", nil, 200})
 
-		if rec.Code != http.StatusOK {
-			t.Fatalf("create wallet WA status %d: %s", rec.Code, rec.Body.String())
-		}
+	bal := do(t, h, call{"GET", "/api/v1/wallets/WB/balance", "Org2MSP", nil, 200})
+	if b := bal.Payload.(map[string]any); b["settled"].(float64) != 300_000 {
+		t.Fatalf("WB balance: %v", b)
+	}
+	do(t, h, call{"GET", "/api/v1/wallets/WB/balance", "Org1MSP", nil, 403})
 
-		var resp models.EndorsementResponse
-		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-			t.Fatalf("decode resp: %v", err)
-		}
-		if resp.Status != "ENDORSED" || resp.Endorsement == nil {
-			t.Fatalf("invalid endorsement response: %+v", resp)
-		}
-
-		// Save state in in-memory store so subsequent requests see it
-		st.Set(models.DefaultPublicNamespace, "WALLET_WA", []byte(`{"walletId":"WA","ownerMsp":"Org1MSP","status":"ACTIVE"}`))
-		st.Set(models.PDCNameForMSP("Org1MSP"), "BAL_WA", []byte(`{"walletId":"WA","balance":0}`))
+	v := do(t, h, call{"POST", "/api/v1/movements/T2001/verify", "", models.VerifyMovementRequest{Amount: 300_000, Salt: salt}, 200})
+	if v.Payload.(map[string]any)["verified"] != true {
+		t.Fatalf("verify: %+v", v)
+	}
+	sup := do(t, h, call{"GET", "/api/v1/supply", cb, nil, 200})
+	if sup.Payload.(map[string]any)["totalSupply"].(float64) != 1_000_000 {
+		t.Fatalf("supply: %+v", sup)
 	}
 
-	// 3. Create Wallet WB
-	{
-		st.Set(models.DefaultPublicNamespace, "WALLET_WB", []byte(`{"walletId":"WB","ownerMsp":"Org2MSP","status":"ACTIVE"}`))
-		st.Set(models.PDCNameForMSP("Org2MSP"), "BAL_WB", []byte(`{"walletId":"WB","balance":0}`))
+	e := do(t, h, call{"POST", "/api/v1/wallets/WA/freeze?submit=false", cb, map[string]string{"reason": "check"}, 200})
+	if e.Status != models.TxStatusEndorsed || e.Envelope == "" {
+		t.Fatalf("submit=false: %+v", e)
+	}
+	if w := do(t, h, call{"GET", "/api/v1/wallets/WA", "", nil, 200}); w.Payload.(map[string]any)["status"] != models.WalletActive {
+		t.Fatal("submit=false must not change the ledger")
+	}
+	do(t, h, call{"GET", "/api/v1/movements/NOPE", "", nil, 404})
+}
+
+func TestAPI_CallerHeaderAndToken(t *testing.T) {
+	h := newTestServer(t, Options{DefaultMSP: "Org1MSP", APIToken: "s3cret"})
+
+	req := httptest.NewRequest("GET", "/api/v1/supply", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("missing token: %d", rec.Code)
 	}
 
-	// 4. Query Wallet WA via GET /api/v1/wallets/WA
-	{
-		req := httptest.NewRequest("GET", "/api/v1/wallets/WA", nil)
-		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, req)
-
-		if rec.Code != http.StatusOK {
-			t.Fatalf("query wallet WA status %d", rec.Code)
-		}
-		var resp models.EndorsementResponse
-		_ = json.NewDecoder(rec.Body).Decode(&resp)
-		if resp.Status != "QUERIED" {
-			t.Fatalf("expected QUERIED status, got %s", resp.Status)
-		}
+	req = httptest.NewRequest("GET", "/api/v1/supply", nil)
+	req.Header.Set("Authorization", "Bearer s3cret")
+	req.Header.Set("X-Caller-MSP", models.CentralBankMSP)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("header impersonation must be refused: %d", rec.Code)
 	}
 
-	// 5. Mint 500,000 via POST /api/v1/movements/mint
-	{
-		body, _ := json.Marshal(models.MintCBDCRequest{
-			WalletID:   "WA",
-			MovementID: "M100",
-			Amount:     500000,
-			Salt:       "test-salt-16-characters-long",
-		})
-		req := httptest.NewRequest("POST", "/api/v1/movements/mint", bytes.NewReader(body))
-		req.Header.Set("X-Caller-MSP", models.CentralBankMSP)
-		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, req)
-
-		if rec.Code != http.StatusOK {
-			t.Fatalf("mint status %d: %s", rec.Code, rec.Body.String())
-		}
-		var resp models.EndorsementResponse
-		_ = json.NewDecoder(rec.Body).Decode(&resp)
-		if _, ok := resp.ReadWriteSet[models.DefaultPublicNamespace]; !ok {
-			t.Fatal("expected public namespace write in mint")
-		}
-
-		// Update store with minted credit
-		st.Set(models.PDCNameForMSP("Org1MSP"), "CREDIT~WA~M100", []byte(`{"walletId":"WA","movementId":"M100","amount":500000}`))
-		st.Set(models.DefaultCentralBankPDC, "SUPPLY~M100", []byte(`{"movementId":"M100","delta":500000}`))
-	}
-
-	// 6. Check Balance via GET /api/v1/wallets/WA/balance
-	{
-		req := httptest.NewRequest("GET", "/api/v1/wallets/WA/balance", nil)
-		req.Header.Set("X-Caller-MSP", "Org1MSP")
-		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, req)
-
-		if rec.Code != http.StatusOK {
-			t.Fatalf("check balance status %d", rec.Code)
-		}
-	}
-
-	// 7. Consolidate Balance via POST /api/v1/wallets/WA/consolidate
-	{
-		req := httptest.NewRequest("POST", "/api/v1/wallets/WA/consolidate", nil)
-		req.Header.Set("X-Caller-MSP", "Org1MSP")
-		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, req)
-
-		if rec.Code != http.StatusOK {
-			t.Fatalf("consolidate status %d: %s", rec.Code, rec.Body.String())
-		}
-	}
-
-	// 8. Query Total Supply via GET /api/v1/supply
-	{
-		req := httptest.NewRequest("GET", "/api/v1/supply", nil)
-		req.Header.Set("X-Caller-MSP", models.CentralBankMSP)
-		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, req)
-
-		if rec.Code != http.StatusOK {
-			t.Fatalf("query supply status %d", rec.Code)
-		}
+	req = httptest.NewRequest("GET", "/healthz", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("healthz must not require the token: %d", rec.Code)
 	}
 }

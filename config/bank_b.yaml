@@ -1,29 +1,61 @@
-# Bank B (Org2MSP) Endorser Client Configuration
+# Bank B (Org2MSP) X-Client for fabric-x-samples/devnet-3org.
+# Initiates its own transfers, redemptions and consolidations; the Central Bank co-signs.
+# Defaults target the devnet from the host; the ${VAR:-default} references are
+# overridden by docker-compose.3org.yaml.
 
 server:
-  port: 8082
   host: "0.0.0.0"
+  port: ${PORT:-8082}
+  api_token: "${API_TOKEN:-}"
 
-# Mode: "grpc" to connect to Fabric-X Query Service, or "in-memory" for mock
 mode: "grpc"
-
-# Connection to Fabric-X Query Service container
-query_service:
-  endpoint: "localhost:7001" # In Docker network: "committer-query-service:7001"
-  tls:
-    enabled: false # Set to true if Fabric-X devnet has TLS enabled
-    ca_cert: "crypto/bank_b/ca.crt"
-    client_cert: "crypto/bank_b/cert.pem"
-    client_key: "crypto/bank_b/priv_sk"
-
+channel_id: "mychannel"
 default_msp_id: "Org2MSP"
 
 endorsers:
   Org2MSP:
-    msp_id: "Org2MSP"
     cert_path: "crypto/bank_b/cert.pem"
     key_path: "crypto/bank_b/priv_sk"
 
+# This bank's own committer stack.
+query_service:
+  endpoint: "${QS_ENDPOINT:-localhost:7002}"
+  tls: &org_tls
+    mode: "mtls"
+    ca_cert_paths: ["crypto/bank_b/tls/ca.crt"]
+    cert_path: "crypto/bank_b/tls/client.crt"
+    key_path: "crypto/bank_b/tls/client.key"
+sidecar:
+  endpoint: "${SIDECAR_ENDPOINT:-localhost:4002}"
+  tls: *org_tls
+
+orderers:
+  - endpoint: "${ROUTER1:-localhost:7050}"
+    tls: &router_tls
+      mode: "mtls"
+      ca_cert_paths: ["crypto/orderer-tls/orderer-org-1.pem", "crypto/orderer-tls/orderer-org-2.pem", "crypto/orderer-tls/orderer-org-3.pem", "crypto/orderer-tls/orderer-org-4.pem"]
+      cert_path: "crypto/bank_b/tls/client.crt"
+      key_path: "crypto/bank_b/tls/client.key"
+  - endpoint: "${ROUTER2:-localhost:7150}"
+    tls: *router_tls
+  - endpoint: "${ROUTER3:-localhost:7250}"
+    tls: *router_tls
+  - endpoint: "${ROUTER4:-localhost:7350}"
+    tls: *router_tls
+commit_timeout: 30s
+
+# The Central Bank X-Client co-signs this bank's transactions; msp_ca authenticates
+# requests it sends here. Banks never need each other's endorsement.
+peers:
+  CentralBankMSP:
+    endpoint: "${PEER_CB:-http://localhost:8080}"
+    msp_ca: "crypto/cas/CentralBankMSP.pem"
+
+# Must match devnet-3org `make init-namespace-cbdc`.
 namespaces:
   public: "cbdc_public"
   central_bank_pdc: "cbdc_cb_pdc"
+  credits: "cbdc_credits"
+  banks:
+    Org1MSP: "cbdc_org1_pdc"
+    Org2MSP: "cbdc_org2_pdc"

@@ -1,220 +1,114 @@
-# Complete Setup Guide: Fabric-X Sample Network & X-Client
+# Setup Guide: devnet-3org + X-Client
 
-This guide walks through setting up the complete end-to-end environment from scratch for anyone cloning this repository.
-
----
-
-## 1. Architectural Overview:
-
-Before starting, it is crucial to understand the division of labor between the **Fabric-X Sample Network** and **X-Client**:
-
-| Component | Provided By | Responsibilities | Default Port |
-|---|---|---|---|
-| **Query Service (Org 1 / Bank A)** | **Fabric-X Sample Network** | gRPC read gateway in front of Org 1's PostgreSQL DB | `7001` |
-| **Query Service (Org 2 / Bank B)** | **Fabric-X Sample Network** | gRPC read gateway in front of Org 2's PostgreSQL DB | `7002` |
-| **Arma Orderers (Routers 1-4)** | **Fabric-X Sample Network** | 4-party BFT consensus cluster ordering transactions | `7050`, `7150`, `7250`, `7350` |
-| **Committer & Sidecar** | **Fabric-X Sample Network** | Validates MVCC version locks and writes blocks to DB | `4001` |
-| **PostgreSQL Database** | **Fabric-X Sample Network** | Stores committed ledger world state rows | Internal to Docker |
-| **X-Client (This Repo)** | **You / Application Owner** | Executes CBDC business rules & produces signed Read/Write sets | `8080` (or `8081`, `8082`) |
-
-> **Key Takeaway**:  
-> - The sample network provides the blockchain infrastructure (Orderers, Committers, Query Services, and Databases).  
-> - `X-Client` connects to the **Query Service** over gRPC mTLS to read state, executes the smart contract logic in memory, and returns the cryptographically-signed **Read/Write Set**.
+End-to-end setup of the three-organization wholesale CBDC network (Central Bank, Bank A, Bank B) from a fresh clone.
 
 ---
+
+## 1. Who runs what
+
+| Component | Provided by | Port(s) |
+|---|---|---|
+| Arma orderer, 4 parties | `fabric-x-samples/devnet-3org` | routers `7050` `7150` `7250` `7350` |
+| Org1 (Bank A) committer: Query Service, sidecar | devnet-3org `compose.yaml` | `7001`, `4001` |
+| Org2 (Bank B) committer | devnet-3org `compose.org2.yaml` | `7002`, `4002` |
+| Central Bank committer | devnet-3org `compose.centralbank.yaml` | `7003`, `4003` |
+| X-Client per organization | this repo | `8080` CB, `8081` Bank A, `8082` Bank B |
+
+`devnet-3org` is a copy of the upstream `devnet` with a third peer organization, **`CentralBankMSP`** (`centralbank.example.com`), added to `crypto-config.yaml`, `configtx.yaml` (genesis block and lifecycle policy) and its own committer stack. The original `devnet` is untouched. Both use the same container names and the `fabric-x` network, so **run only one of them at a time**.
 
 ## 2. Prerequisites
 
-- **Linux / macOS** environment
-- **Go 1.22+** (tested with Go 1.26+)
-- **Docker & Docker Compose** (ensure your user belongs to the `docker` group)
-- A checkout of the upstream [**`hyperledger/fabric-x-samples`**](https://github.com/hyperledger/fabric-x-samples) repository
+- Linux or macOS, **Go 1.27.3+**, Docker with Compose (your user in the `docker` group)
+- `fabric-x-samples` checked out with the `devnet-3org` folder
 
----
-
-## 3. Step-by-Step Deployment Instructions
-
-### Step 1: Start the Fabric-X Sample Network
-
-Navigate to the `devnet` folder inside your `fabric-x-samples` clone:
+## 3. Start the network
 
 ```bash
-cd /path/to/fabric-x-samples/devnet
+cd /path/to/fabric-x-samples/devnet-3org
 
-# 1. Generate genesis block, crypto materials, and configuration
-make init
-
-# 2. Start the orderers, committer, and Query Service containers
-make start
+make init                  # crypto for 4 orderer orgs + Org1, Org2, CentralBank; genesis block
+make start-3org            # orderers + all three committer stacks (35 containers)
+make init-namespace-cbdc   # register the 5 CBDC namespaces with their policies
+make list-namespaces       # expect 5 namespaces at version 0
 ```
 
-*Verification: Ensure the 4 Arma orderers (port `7050`), Sidecar (port `4001`), and Query Service (port `7001`) are up and healthy:*
-```bash
-docker ps
-```
+`init-namespace-cbdc` registers:
 
----
+| Namespace | Policy |
+|---|---|
+| `cbdc_public`, `cbdc_cb_pdc`, `cbdc_credits` | `AND('CentralBankMSP.member')` |
+| `cbdc_org1_pdc` | `AND('Org1MSP.member','CentralBankMSP.member')` |
+| `cbdc_org2_pdc` | `AND('Org2MSP.member','CentralBankMSP.member')` |
 
-### Step 2: Register the 4 CBDC Namespaces
-
-In Fabric-X, tables in PostgreSQL are only created after namespaces are registered with a channel policy. Run these 4 commands in `devnet/`:
-
-```bash
-cd /path/to/fabric-x-samples/devnet
-
-# Public wallet directory & movement commitments
-make init-namespace NS=cbdc_public  POLICY="OR('Org1MSP.member','Org2MSP.member')"
-
-# Central Bank confidential supply ledger
-make init-namespace NS=cbdc_cb_pdc   POLICY="OR('Org1MSP.member','Org2MSP.member')"
-
-# Bank A (Org1) confidential balance and credits
-make init-namespace NS=cbdc_org1_pdc POLICY="OR('Org1MSP.member','Org2MSP.member')"
-
-# Bank B (Org2) confidential balance and credits
-make init-namespace NS=cbdc_org2_pdc POLICY="OR('Org1MSP.member','Org2MSP.member')"
-```
-
-*Verification: List installed namespaces:*
-```bash
-make list-namespaces
-```
-You should see all 4 namespaces installed with `version 0`.
-
----
-
-### Step 3: Copy Crypto Credentials into `X-Client`
-
-`X-Client` needs the certificates and keys generated in Step 1 to sign endorsements and authenticate over mTLS to the Query Service.
-
-Run the included automated helper script from the `X-Client` root:
+## 4. Copy crypto material
 
 ```bash
 cd /path/to/X-Client
-
-# Run helper script pointing to your devnet directory
-./scripts/copy-crypto.sh /path/to/fabric-x-samples/devnet
+./scripts/copy-crypto.sh /path/to/fabric-x-samples/devnet-3org
 ```
 
-This automatically extracts and configures:
-- **`crypto/centralbank/`**: Central Bank admin signing certificate and private key.
-- **`crypto/bank_a/`**: Org1 (Bank A) user certificate, private key, and mTLS client keypair.
-- **`crypto/bank_b/`**: Org2 (Bank B) user certificate, private key, and mTLS client keypair.
+For each organization this copies the User1 signing identity (`crypto/<org>/cert.pem`, `priv_sk`), the org TLS CA and the user TLS client keypair (`crypto/<org>/tls/`). It also copies the public MSP CA of every organization (`crypto/cas/`) and the orderer TLS CAs (`crypto/orderer-tls/`). Everything under `crypto/` except the READMEs is git-ignored.
 
----
+## 5. Run the three X-Clients
 
-### Step 4: Build & Launch `X-Client`
-
-Build the binary:
+On the host, in three terminals:
 ```bash
-cd /path/to/X-Client
-make build
+make run-centralbank   # :8080, reads from the CB committer (7003/4003)
+make run-bank-a        # :8081, reads from the Org1 committer (7001/4001)
+make run-bank-b        # :8082, reads from the Org2 committer (7002/4002)
+```
+or as containers on the devnet network:
+```bash
+docker compose -f docker-compose.3org.yaml up -d --build
 ```
 
-You now have two options to run `X-Client`:
+Each prints its policies and peers, then `synchronizer ready at block N` once its key index has caught up. `curl localhost:808{0,1,2}/healthz` reports `"ready": true`.
 
-#### Option A: Single Unified Service (Recommended for testing / API gateways)
-Loads credentials for Central Bank, Bank A, and Bank B into a single service, automatically using the correct signing key based on the `X-Caller-MSP` HTTP header:
-
-```bash
-./bin/x-client -config config/config.yaml
-```
-*Listens on `http://localhost:8080`.*
-
-#### Option B: 3-Organization Distributed Deployment (Real production topology)
-Start three independent microservices on distinct ports, each representing an isolated organization:
+## 6. End-to-end flow
 
 ```bash
-# Terminal 1: Central Bank Endorser (Port 8080)
-./bin/x-client -config config/centralbank.yaml
+J='-H Content-Type:application/json'
 
-# Terminal 2: Commercial Bank A Endorser (Port 8081)
-./bin/x-client -config config/bank_a.yaml
+# Central Bank (8080) opens wallets and mints
+curl -X POST localhost:8080/api/v1/wallets $J -d '{"walletId":"WA","ownerMsp":"Org1MSP","participantType":"bank"}'
+curl -X POST localhost:8080/api/v1/wallets $J -d '{"walletId":"WB","ownerMsp":"Org2MSP","participantType":"bank"}'
+curl -X POST localhost:8080/api/v1/movements/mint $J -d '{"walletId":"WA","movementId":"M1001","amount":1000000,"salt":"secret-salt-16-chars-min"}'
 
-# Terminal 3: Commercial Bank B Endorser (Port 8082)
-./bin/x-client -config config/bank_b.yaml
-```
+# Committed state is readable immediately
+curl localhost:8081/api/v1/wallets/WA/balance          # pendingCredits 1000000
 
----
+# Bank A (8081) pays Bank B; the Central Bank X-Client co-signs automatically
+curl -X POST localhost:8081/api/v1/movements/transfer $J -d '{"fromWalletId":"WA","toWalletId":"WB","movementId":"T2001","amount":300000,"salt":"secret-salt-16-chars-min"}'
 
-## 4. Understanding the Transaction Flow: Endorse vs. Commit
+# Bank B (8082) folds the incoming credit into its balance
+curl -X POST localhost:8082/api/v1/wallets/WB/consolidate
+curl localhost:8082/api/v1/wallets/WB/balance          # settled 300000
 
-When you make a request to `X-Client`:
+# Bank A redeems; the Central Bank checks supply
+curl -X POST localhost:8081/api/v1/movements/redeem $J -d '{"walletId":"WA","movementId":"R3001","amount":100000,"salt":"redeem-salt-16-chars"}'
+curl localhost:8080/api/v1/supply                      # totalSupply 900000
 
-1. **`POST` Endpoints Return `status: "ENDORSED"`**:
-   ```bash
-   curl -X POST http://localhost:8080/api/v1/wallets \
-     -H "Content-Type: application/json" \
-     -H "X-Caller-MSP: CentralBankMSP" \
-     -d '{"walletId":"WA","ownerMsp":"Org1MSP","participantType":"bank"}'
-   ```
-   - `X-Client` connects to the Query Service (`localhost:7001`).
-   - Simulates the wallet creation.
-   - Outputs the **Read/Write Set** (`WALLET_WA` in `cbdc_public`, `BAL_WA` in `cbdc_org1_pdc`).
-   - Cryptographically signs the Read/Write set with Central Bank's private key.
-   - Returns the signed proposal.
-
-2. **Why `GET` Reads Committed State**:
-   - `X-Client` is the **Endorser**. It outputs the signed proposal.
-   - To commit it to the blockchain, the signed envelope is forwarded to the **Arma Orderer** (`localhost:7050`).
-   - The Orderer sequences the transaction into a block and sends it to the **Committer**.
-   - The Committer executes the SQL write to PostgreSQL and emits status `COMMITTED` via the **Sidecar** (`localhost:4001`).
-   - Calling `GET /api/v1/wallets/WA` queries PostgreSQL; once committed, the wallet is returned.
-
----
-
-## 5. Verified End-to-End Test Commands
-
-Here is the sequential flow to test all features:
-
-```bash
-# 1. Health check
-curl http://localhost:8080/healthz
-
-# 2. Central Bank opens a wallet for Bank A (Org1MSP)
-curl -X POST http://localhost:8080/api/v1/wallets \
-  -H "Content-Type: application/json" \
-  -H "X-Caller-MSP: CentralBankMSP" \
-  -d '{"walletId":"WA","ownerMsp":"Org1MSP","participantType":"bank"}'
-
-# 3. Central Bank opens a wallet for Bank B (Org2MSP)
-curl -X POST http://localhost:8080/api/v1/wallets \
-  -H "Content-Type: application/json" \
-  -H "X-Caller-MSP: CentralBankMSP" \
-  -d '{"walletId":"WB","ownerMsp":"Org2MSP","participantType":"bank"}'
-
-# 4. Central Bank mints 1,000,000 units into Bank A's wallet
-curl -X POST http://localhost:8080/api/v1/movements/mint \
-  -H "Content-Type: application/json" \
-  -H "X-Caller-MSP: CentralBankMSP" \
-  -d '{"walletId":"WA","movementId":"M1001","amount":1000000,"salt":"secret-salt-16-chars-min"}'
-
-# 5. Bank A transfers 300,000 units to Bank B
-curl -X POST http://localhost:8080/api/v1/movements/transfer \
-  -H "Content-Type: application/json" \
-  -H "X-Caller-MSP: Org1MSP" \
-  -d '{"fromWalletId":"WA","toWalletId":"WB","movementId":"T2001","amount":300000,"salt":"secret-salt-16-chars-min"}'
-
-# 6. Verify the transfer amount commitment
-curl -X POST http://localhost:8080/api/v1/movements/T2001/verify \
-  -H "Content-Type: application/json" \
-  -d '{"amount":300000,"salt":"secret-salt-16-chars-min"}'
+# Anyone can check an amount commitment
+curl -X POST localhost:8081/api/v1/movements/T2001/verify $J -d '{"amount":300000,"salt":"secret-salt-16-chars-min"}'
 ```
 
----
+Every mutation returns `"status": "COMMITTED"` with the endorsements it carried. For example, the transfer shows `Org1MSP` and `CentralBankMSP` on `cbdc_org1_pdc`.
 
-## 6. Tearing Down the Network
+Expected refusals:
+- Bank B's X-Client debiting `WA` → `403 ACCESS_DENIED`
+- `X-Caller-MSP: CentralBankMSP` sent to Bank A's X-Client → `403`
+- transfer while the Central Bank X-Client is down → `503 PEER_UNREACHABLE`
+- a transaction that writes Bank A's balance without Bank A's signature, submitted straight to the routers → the committer aborts it with `ABORTED_SIGNATURE_INVALID`
 
-When you are done testing:
+## 7. Standalone mode
 
-### Stop the Network (Preserves Database & Ledger)
+No network at all: `make run` (or `docker compose up --build`) starts one in-memory X-Client holding throwaway keys for all three organizations on `:8080`. Use `X-Caller-MSP` to choose the acting organization. The flow above works unchanged, with every port set to 8080.
+
+## 8. Tear down
+
 ```bash
-cd /path/to/fabric-x-samples/devnet
-make stop
-```
-
-### Complete Purge (Wipes All Containers and Database Volumes)
-```bash
-cd /path/to/fabric-x-samples/devnet
-make purge
+docker compose -f docker-compose.3org.yaml down     # if X-Clients run in Docker
+cd /path/to/fabric-x-samples/devnet-3org
+make stop     # keep ledger data
+make purge    # wipe containers and databases
 ```

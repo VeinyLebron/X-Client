@@ -1,19 +1,22 @@
+// Package contract implements the wholesale CBDC rules. Every function is deterministic
+// given its TxContext, so independent endorsers re-executing an operation derive
+// byte-identical read/write sets.
 package contract
 
 import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	"x-client/pkg/models"
 	"x-client/pkg/simulator"
 )
 
-// Standard error codes matching the chaincode.
+// Error codes matching the chaincode.
 const (
 	ErrInvalidArgument = "INVALID_ARGUMENT"
 	ErrNotFound        = "NOT_FOUND"
@@ -25,9 +28,44 @@ const (
 	ErrDuplicate       = "DUPLICATE_REQUEST"
 )
 
-func fail(code, format string, args ...any) error {
-	return fmt.Errorf("%s: %s", code, fmt.Sprintf(format, args...))
+// Error is a business-rule violation. Any other error returned by the contract is an
+// infrastructure failure (e.g. the Query Service is unreachable).
+type Error struct {
+	Code string
+	Msg  string
 }
+
+func (e *Error) Error() string { return e.Code + ": " + e.Msg }
+
+func fail(code, format string, args ...any) error {
+	return &Error{Code: code, Msg: fmt.Sprintf(format, args...)}
+}
+
+// AsError returns the contract error wrapped in err, if any.
+func AsError(err error) (*Error, bool) {
+	var ce *Error
+	ok := errors.As(err, &ce)
+	return ce, ok
+}
+
+// TxContext carries the inputs a contract call must not derive itself, so that every
+// endorser executing the same transaction computes the same result.
+type TxContext struct {
+	TxID      string
+	Timestamp string // RFC 3339, UTC
+	CallerMSP string
+}
+
+// Mutating operations, as named in peer endorsement requests.
+const (
+	OpCreateWallet   = "create_wallet"
+	OpFreezeWallet   = "freeze_wallet"
+	OpUnfreezeWallet = "unfreeze_wallet"
+	OpMint           = "mint"
+	OpTransfer       = "transfer"
+	OpRedeem         = "redeem"
+	OpConsolidate    = "consolidate"
+)
 
 func hashOf(parts ...string) string {
 	sum := sha256.Sum256([]byte(strings.Join(parts, "|")))
@@ -41,33 +79,144 @@ func amountHash(movementID string, amount int64, salt string) string {
 func walletKey(id string) string     { return models.PrefixWallet + id }
 func movementKey(id string) string   { return models.PrefixMovement + id }
 func balanceKey(id string) string    { return models.PrefixBalance + id }
-func creditKey(toWallet, movementID string) string {
-	return models.PrefixCredit + toWallet + "~" + movementID
-}
 func moveDetailKey(id string) string { return models.PrefixMoveDetail + id }
 func supplyKey(id string) string     { return models.PrefixSupply + id }
+func creditPrefix(wallet string) string {
+	return models.PrefixCredit + wallet + "~"
+}
+func creditKey(toWallet, movementID string) string {
+	return creditPrefix(toWallet) + movementID
+}
+
+// Namespaces names the Fabric-X namespaces the contract uses.
+type Namespaces struct {
+	Public  string
+	Supply  string            // Central Bank supply ledger and Central Bank balances
+	Credits string            // pending incoming credits for all wallets
+	Banks   map[string]string // MSP ID -> balance namespace; defaults to models.PDCNameForMSP
+}
+
+// DefaultNamespaces returns the namespace layout registered by devnet-3org.
+func DefaultNamespaces() Namespaces {
+	return Namespaces{
+		Public:  models.DefaultPublicNamespace,
+		Supply:  models.DefaultCentralBankPDC,
+		Credits: models.DefaultCreditsNamespace,
+	}
+}
 
 // CBDCService implements wholesale CBDC smart contract rules.
 type CBDCService struct {
-	PublicNS string
-	CBNamespace string
+	ns Namespaces
 }
 
-func NewCBDCService() *CBDCService {
-	return &CBDCService{
-		PublicNS:    models.DefaultPublicNamespace,
-		CBNamespace: models.DefaultCentralBankPDC,
+func NewCBDCService(ns Namespaces) *CBDCService {
+	return &CBDCService{ns: ns}
+}
+
+// Namespaces returns the namespace layout in use.
+func (c *CBDCService) Namespaces() Namespaces { return c.ns }
+
+// BalanceNamespace returns the namespace holding balances owned by mspID.
+func (c *CBDCService) BalanceNamespace(mspID string) string {
+	if mspID == models.CentralBankMSP {
+		return c.ns.Supply
 	}
+	if ns, ok := c.ns.Banks[mspID]; ok {
+		return ns
+	}
+	return models.PDCNameForMSP(mspID)
+}
+
+// Execute runs a mutating operation from its JSON request. It is the single entry point
+// used both by the initiating endorser and by peers re-executing a proposal.
+func (c *CBDCService) Execute(sim *simulator.MultiNamespaceSimulator, tx TxContext, op string, req json.RawMessage) (any, error) {
+	switch op {
+	case OpCreateWallet:
+		var r models.CreateWalletRequest
+		if err := decode(req, &r); err != nil {
+			return nil, err
+		}
+		return c.CreateWallet(sim, tx, r)
+	case OpFreezeWallet:
+		var r models.WalletStatusRequest
+		if err := decode(req, &r); err != nil {
+			return nil, err
+		}
+		return c.FreezeWallet(sim, tx, r)
+	case OpUnfreezeWallet:
+		var r models.WalletStatusRequest
+		if err := decode(req, &r); err != nil {
+			return nil, err
+		}
+		return c.UnfreezeWallet(sim, tx, r)
+	case OpMint:
+		var r models.MintCBDCRequest
+		if err := decode(req, &r); err != nil {
+			return nil, err
+		}
+		return c.MintCBDC(sim, tx, r)
+	case OpTransfer:
+		var r models.TransferCBDCRequest
+		if err := decode(req, &r); err != nil {
+			return nil, err
+		}
+		return c.TransferCBDC(sim, tx, r)
+	case OpRedeem:
+		var r models.RedeemCBDCRequest
+		if err := decode(req, &r); err != nil {
+			return nil, err
+		}
+		return c.RedeemCBDC(sim, tx, r)
+	case OpConsolidate:
+		var r models.ConsolidateRequest
+		if err := decode(req, &r); err != nil {
+			return nil, err
+		}
+		bal, err := c.ConsolidateBalance(sim, tx, r.WalletID)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"walletId": r.WalletID, "consolidatedBalance": bal}, nil
+	default:
+		return nil, fail(ErrInvalidArgument, "unknown operation %q", op)
+	}
+}
+
+func decode(raw json.RawMessage, v any) error {
+	if err := json.Unmarshal(raw, v); err != nil {
+		return fail(ErrInvalidArgument, "invalid request body: %v", err)
+	}
+	return nil
+}
+
+func requireCentralBank(callerMSP string) error {
+	if callerMSP != models.CentralBankMSP {
+		return fail(ErrAccessDenied, "caller MSP %s is not authorised (allowed: %s)", callerMSP, models.CentralBankMSP)
+	}
+	return nil
+}
+
+func validateAmount(amount int64, salt string) error {
+	if amount <= 0 {
+		return fail(ErrInvalidArgument, "amount must be > 0 (got %d)", amount)
+	}
+	if len(salt) < 16 {
+		return fail(ErrInvalidArgument, "salt must be at least 16 characters")
+	}
+	return nil
 }
 
 // ─── Wallets ─────────────────────────────────────────────────────────────────
 
-func (c *CBDCService) CreateWallet(sim *simulator.MultiNamespaceSimulator, callerMSP, txID string, req models.CreateWalletRequest) (*models.Wallet, error) {
-	if callerMSP != models.CentralBankMSP {
-		return nil, fail(ErrAccessDenied, "caller MSP %s is not authorised (allowed: %s)", callerMSP, models.CentralBankMSP)
+// CreateWallet registers a wallet. Its balance record is created on first consolidation,
+// so wallet creation needs only the Central Bank's endorsement.
+func (c *CBDCService) CreateWallet(sim *simulator.MultiNamespaceSimulator, tx TxContext, req models.CreateWalletRequest) (*models.Wallet, error) {
+	if err := requireCentralBank(tx.CallerMSP); err != nil {
+		return nil, err
 	}
 	if req.WalletID == "" || req.OwnerMSP == "" {
-		return nil, fail(ErrInvalidArgument, "walletID and ownerMSP must not be empty")
+		return nil, fail(ErrInvalidArgument, "walletId and ownerMsp must not be empty")
 	}
 	if req.ParticipantType != models.ParticipantBank && req.ParticipantType != models.ParticipantCentralBank {
 		return nil, fail(ErrInvalidArgument, "participantType must be one of bank, central_bank")
@@ -76,8 +225,7 @@ func (c *CBDCService) CreateWallet(sim *simulator.MultiNamespaceSimulator, calle
 		return nil, fail(ErrInvalidArgument, "participantType central_bank is reserved for %s", models.CentralBankMSP)
 	}
 
-	// Check if already exists
-	existing, err := sim.Get(c.PublicNS, walletKey(req.WalletID))
+	existing, err := sim.Get(c.ns.Public, walletKey(req.WalletID))
 	if err != nil {
 		return nil, err
 	}
@@ -85,62 +233,42 @@ func (c *CBDCService) CreateWallet(sim *simulator.MultiNamespaceSimulator, calle
 		return nil, fail(ErrAlreadyExists, "wallet %s already exists", req.WalletID)
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
 	w := &models.Wallet{
 		DocType:         "wholesaleWallet",
 		WalletID:        req.WalletID,
 		OwnerMSP:        req.OwnerMSP,
 		ParticipantType: req.ParticipantType,
 		Status:          models.WalletActive,
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		CreatedAt:       tx.Timestamp,
+		UpdatedAt:       tx.Timestamp,
 	}
-
-	// Write public wallet
-	if err := sim.PutJSON(c.PublicNS, walletKey(req.WalletID), w); err != nil {
+	if err := sim.PutJSON(c.ns.Public, walletKey(req.WalletID), w); err != nil {
 		return nil, err
 	}
-
-	// Initialize balance in owner PDC namespace
-	ownerPDC := models.PDCNameForMSP(req.OwnerMSP)
-	bal := &models.PrivateBalance{
-		WalletID:  req.WalletID,
-		Balance:   0,
-		Salt:      txID,
-		UpdatedAt: now,
-	}
-	if err := sim.PutJSON(ownerPDC, balanceKey(req.WalletID), bal); err != nil {
-		return nil, err
-	}
-
 	return w, nil
 }
 
-func (c *CBDCService) FreezeWallet(sim *simulator.MultiNamespaceSimulator, callerMSP string, walletID, reason string) (*models.Wallet, error) {
-	if callerMSP != models.CentralBankMSP {
-		return nil, fail(ErrAccessDenied, "caller MSP %s is not authorised (allowed: %s)", callerMSP, models.CentralBankMSP)
-	}
-	if reason == "" {
-		return nil, fail(ErrInvalidArgument, "reason must not be empty")
-	}
-	return c.setWalletStatus(sim, walletID, models.WalletFrozen, reason)
-}
-
-func (c *CBDCService) UnfreezeWallet(sim *simulator.MultiNamespaceSimulator, callerMSP string, walletID string) (*models.Wallet, error) {
-	if callerMSP != models.CentralBankMSP {
-		return nil, fail(ErrAccessDenied, "caller MSP %s is not authorised (allowed: %s)", callerMSP, models.CentralBankMSP)
-	}
-	return c.setWalletStatus(sim, walletID, models.WalletActive, "")
-}
-
-func (c *CBDCService) setWalletStatus(sim *simulator.MultiNamespaceSimulator, walletID, status, reason string) (*models.Wallet, error) {
-	var w models.Wallet
-	ok, err := sim.GetJSON(c.PublicNS, walletKey(walletID), &w)
-	if err != nil {
+func (c *CBDCService) FreezeWallet(sim *simulator.MultiNamespaceSimulator, tx TxContext, req models.WalletStatusRequest) (*models.Wallet, error) {
+	if err := requireCentralBank(tx.CallerMSP); err != nil {
 		return nil, err
 	}
-	if !ok {
-		return nil, fail(ErrNotFound, "wallet %s does not exist", walletID)
+	if req.Reason == "" {
+		return nil, fail(ErrInvalidArgument, "reason must not be empty")
+	}
+	return c.setWalletStatus(sim, tx, req.WalletID, models.WalletFrozen, req.Reason)
+}
+
+func (c *CBDCService) UnfreezeWallet(sim *simulator.MultiNamespaceSimulator, tx TxContext, req models.WalletStatusRequest) (*models.Wallet, error) {
+	if err := requireCentralBank(tx.CallerMSP); err != nil {
+		return nil, err
+	}
+	return c.setWalletStatus(sim, tx, req.WalletID, models.WalletActive, "")
+}
+
+func (c *CBDCService) setWalletStatus(sim *simulator.MultiNamespaceSimulator, tx TxContext, walletID, status, reason string) (*models.Wallet, error) {
+	w, err := c.getWallet(sim, walletID)
+	if err != nil {
+		return nil, err
 	}
 	if w.Status == status {
 		return nil, fail(ErrInvalidState, "wallet %s is already %s", walletID, status)
@@ -148,152 +276,88 @@ func (c *CBDCService) setWalletStatus(sim *simulator.MultiNamespaceSimulator, wa
 
 	w.Status = status
 	w.FreezeReason = reason
-	w.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-
-	if err := sim.PutJSON(c.PublicNS, walletKey(walletID), &w); err != nil {
+	w.UpdatedAt = tx.Timestamp
+	if err := sim.PutJSON(c.ns.Public, walletKey(walletID), w); err != nil {
 		return nil, err
 	}
-	return &w, nil
+	return w, nil
 }
 
 // ─── Movements ───────────────────────────────────────────────────────────────
 
-func (c *CBDCService) MintCBDC(sim *simulator.MultiNamespaceSimulator, callerMSP, txID string, req models.MintCBDCRequest) (*models.Movement, error) {
-	if callerMSP != models.CentralBankMSP {
-		return nil, fail(ErrAccessDenied, "caller MSP %s is not authorised (allowed: %s)", callerMSP, models.CentralBankMSP)
+// MintCBDC issues new CBDC as a pending credit to the payee's wallet.
+func (c *CBDCService) MintCBDC(sim *simulator.MultiNamespaceSimulator, tx TxContext, req models.MintCBDCRequest) (*models.Movement, error) {
+	if err := requireCentralBank(tx.CallerMSP); err != nil {
+		return nil, err
 	}
-	if req.Amount <= 0 {
-		return nil, fail(ErrInvalidArgument, "amount must be > 0 (got %d)", req.Amount)
-	}
-	if len(req.Salt) < 16 {
-		return nil, fail(ErrInvalidArgument, "salt must be at least 16 characters")
+	if err := validateAmount(req.Amount, req.Salt); err != nil {
+		return nil, err
 	}
 	if err := c.requireNewMovement(sim, req.MovementID); err != nil {
 		return nil, err
 	}
-
-	toWallet, err := c.getActiveWallet(sim, req.WalletID)
-	if err != nil {
+	if _, err := c.getActiveWallet(sim, req.WalletID); err != nil {
 		return nil, err
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
-
-	// Blind credit to payee's PDC
-	toPDC := models.PDCNameForMSP(toWallet.OwnerMSP)
 	credit := &models.PrivateCredit{
 		WalletID:   req.WalletID,
 		MovementID: req.MovementID,
+		Type:       models.MoveMint,
 		Amount:     req.Amount,
 		Salt:       req.Salt,
+		Timestamp:  tx.Timestamp,
 	}
-	if err := sim.PutJSON(toPDC, creditKey(req.WalletID, req.MovementID), credit); err != nil {
+	if err := sim.PutJSON(c.ns.Credits, creditKey(req.WalletID, req.MovementID), credit); err != nil {
 		return nil, err
 	}
 
-	// Supply delta to CentralBank PDC
-	delta := &models.SupplyDelta{
-		MovementID: req.MovementID,
-		Delta:      req.Amount,
-		Timestamp:  now,
-	}
-	if err := sim.PutJSON(c.CBNamespace, supplyKey(req.MovementID), delta); err != nil {
+	delta := &models.SupplyDelta{MovementID: req.MovementID, Delta: req.Amount, Timestamp: tx.Timestamp}
+	if err := sim.PutJSON(c.ns.Supply, supplyKey(req.MovementID), delta); err != nil {
 		return nil, err
 	}
 
-	// Public movement record
-	mv := &models.Movement{
-		DocType:    "movement",
-		MovementID: req.MovementID,
-		Type:       models.MoveMint,
-		FromWallet: "",
-		ToWallet:   req.WalletID,
-		AmountHash: amountHash(req.MovementID, req.Amount, req.Salt),
-		Status:     "SETTLED",
-		Timestamp:  now,
-		TxID:       txID,
-	}
-	if err := sim.PutJSON(c.PublicNS, movementKey(req.MovementID), mv); err != nil {
-		return nil, err
-	}
-
-	// Private detail to payee PDC
-	detail := &models.PrivateMovement{
-		MovementID: req.MovementID,
-		Type:       models.MoveMint,
-		FromWallet: "",
-		ToWallet:   req.WalletID,
-		Amount:     req.Amount,
-		Salt:       req.Salt,
-		Timestamp:  now,
-	}
-	if err := sim.PutJSON(toPDC, moveDetailKey(req.MovementID), detail); err != nil {
-		return nil, err
-	}
-
-	return mv, nil
+	return c.putMovement(sim, tx, req.MovementID, models.MoveMint, "", req.WalletID, req.Amount, req.Salt)
 }
 
-func (c *CBDCService) TransferCBDC(sim *simulator.MultiNamespaceSimulator, callerMSP, txID string, req models.TransferCBDCRequest) (*models.Movement, error) {
+// TransferCBDC debits the caller's wallet and credits the payee as a pending credit.
+func (c *CBDCService) TransferCBDC(sim *simulator.MultiNamespaceSimulator, tx TxContext, req models.TransferCBDCRequest) (*models.Movement, error) {
 	if req.FromWalletID == req.ToWalletID {
 		return nil, fail(ErrInvalidArgument, "source and destination wallets must differ")
 	}
-	if req.Amount <= 0 {
-		return nil, fail(ErrInvalidArgument, "amount must be > 0 (got %d)", req.Amount)
-	}
-	if len(req.Salt) < 16 {
-		return nil, fail(ErrInvalidArgument, "salt must be at least 16 characters")
+	if err := validateAmount(req.Amount, req.Salt); err != nil {
+		return nil, err
 	}
 	if err := c.requireNewMovement(sim, req.MovementID); err != nil {
 		return nil, err
 	}
 
-	fromWallet, err := c.getOwnedActiveWallet(sim, callerMSP, req.FromWalletID)
+	fromWallet, err := c.getOwnedActiveWallet(sim, tx.CallerMSP, req.FromWalletID)
 	if err != nil {
 		return nil, err
 	}
-	toWallet, err := c.getActiveWallet(sim, req.ToWalletID)
-	if err != nil {
+	if _, err := c.getActiveWallet(sim, req.ToWalletID); err != nil {
 		return nil, err
 	}
 
-	// Debit fromWallet (consolidates pending credits first)
-	if err := c.debit(sim, fromWallet, req.Amount, txID); err != nil {
+	if err := c.debit(sim, tx, fromWallet, req.Amount); err != nil {
 		return nil, err
 	}
 
-	// Blind credit to toWallet in toPDC
-	toPDC := models.PDCNameForMSP(toWallet.OwnerMSP)
 	credit := &models.PrivateCredit{
 		WalletID:   req.ToWalletID,
 		MovementID: req.MovementID,
+		Type:       models.MoveTransfer,
 		FromWallet: req.FromWalletID,
 		Amount:     req.Amount,
 		Salt:       req.Salt,
+		Timestamp:  tx.Timestamp,
 	}
-	if err := sim.PutJSON(toPDC, creditKey(req.ToWalletID, req.MovementID), credit); err != nil {
+	if err := sim.PutJSON(c.ns.Credits, creditKey(req.ToWalletID, req.MovementID), credit); err != nil {
 		return nil, err
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
-
-	// Public movement
-	mv := &models.Movement{
-		DocType:    "movement",
-		MovementID: req.MovementID,
-		Type:       models.MoveTransfer,
-		FromWallet: req.FromWalletID,
-		ToWallet:   req.ToWalletID,
-		AmountHash: amountHash(req.MovementID, req.Amount, req.Salt),
-		Status:     "SETTLED",
-		Timestamp:  now,
-		TxID:       txID,
-	}
-	if err := sim.PutJSON(c.PublicNS, movementKey(req.MovementID), mv); err != nil {
-		return nil, err
-	}
-
-	// Private detail to both party PDCs
+	// The payer's audit copy; the payee's copy is written when it consolidates.
 	detail := &models.PrivateMovement{
 		MovementID: req.MovementID,
 		Type:       models.MoveTransfer,
@@ -301,99 +365,84 @@ func (c *CBDCService) TransferCBDC(sim *simulator.MultiNamespaceSimulator, calle
 		ToWallet:   req.ToWalletID,
 		Amount:     req.Amount,
 		Salt:       req.Salt,
-		Timestamp:  now,
+		Timestamp:  tx.Timestamp,
 	}
-
-	fromPDC := models.PDCNameForMSP(fromWallet.OwnerMSP)
-	if err := sim.PutJSON(fromPDC, moveDetailKey(req.MovementID), detail); err != nil {
+	if err := sim.PutJSON(c.BalanceNamespace(fromWallet.OwnerMSP), moveDetailKey(req.MovementID), detail); err != nil {
 		return nil, err
 	}
-	if fromPDC != toPDC {
-		if err := sim.PutJSON(toPDC, moveDetailKey(req.MovementID), detail); err != nil {
-			return nil, err
-		}
-	}
 
-	return mv, nil
+	return c.putMovement(sim, tx, req.MovementID, models.MoveTransfer, req.FromWalletID, req.ToWalletID, req.Amount, req.Salt)
 }
 
-func (c *CBDCService) RedeemCBDC(sim *simulator.MultiNamespaceSimulator, callerMSP, txID string, req models.RedeemCBDCRequest) (*models.Movement, error) {
-	if req.Amount <= 0 {
-		return nil, fail(ErrInvalidArgument, "amount must be > 0 (got %d)", req.Amount)
-	}
-	if len(req.Salt) < 16 {
-		return nil, fail(ErrInvalidArgument, "salt must be at least 16 characters")
+// RedeemCBDC burns CBDC from the caller's wallet.
+func (c *CBDCService) RedeemCBDC(sim *simulator.MultiNamespaceSimulator, tx TxContext, req models.RedeemCBDCRequest) (*models.Movement, error) {
+	if err := validateAmount(req.Amount, req.Salt); err != nil {
+		return nil, err
 	}
 	if err := c.requireNewMovement(sim, req.MovementID); err != nil {
 		return nil, err
 	}
 
-	fromWallet, err := c.getOwnedActiveWallet(sim, callerMSP, req.WalletID)
+	fromWallet, err := c.getOwnedActiveWallet(sim, tx.CallerMSP, req.WalletID)
 	if err != nil {
 		return nil, err
 	}
-
-	// Debit wallet
-	if err := c.debit(sim, fromWallet, req.Amount, txID); err != nil {
+	if err := c.debit(sim, tx, fromWallet, req.Amount); err != nil {
 		return nil, err
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
-
-	// Negative supply delta to CentralBank PDC
-	delta := &models.SupplyDelta{
-		MovementID: req.MovementID,
-		Delta:      -req.Amount,
-		Timestamp:  now,
-	}
-	if err := sim.PutJSON(c.CBNamespace, supplyKey(req.MovementID), delta); err != nil {
+	delta := &models.SupplyDelta{MovementID: req.MovementID, Delta: -req.Amount, Timestamp: tx.Timestamp}
+	if err := sim.PutJSON(c.ns.Supply, supplyKey(req.MovementID), delta); err != nil {
 		return nil, err
 	}
 
-	// Public movement
-	mv := &models.Movement{
-		DocType:    "movement",
-		MovementID: req.MovementID,
-		Type:       models.MoveRedeem,
-		FromWallet: req.WalletID,
-		ToWallet:   "",
-		AmountHash: amountHash(req.MovementID, req.Amount, req.Salt),
-		Status:     "SETTLED",
-		Timestamp:  now,
-		TxID:       txID,
-	}
-	if err := sim.PutJSON(c.PublicNS, movementKey(req.MovementID), mv); err != nil {
-		return nil, err
-	}
-
-	// Private detail to owner PDC
 	detail := &models.PrivateMovement{
 		MovementID: req.MovementID,
 		Type:       models.MoveRedeem,
 		FromWallet: req.WalletID,
-		ToWallet:   "",
 		Amount:     req.Amount,
 		Salt:       req.Salt,
-		Timestamp:  now,
+		Timestamp:  tx.Timestamp,
 	}
-	ownerPDC := models.PDCNameForMSP(fromWallet.OwnerMSP)
-	if err := sim.PutJSON(ownerPDC, moveDetailKey(req.MovementID), detail); err != nil {
+	if err := sim.PutJSON(c.BalanceNamespace(fromWallet.OwnerMSP), moveDetailKey(req.MovementID), detail); err != nil {
 		return nil, err
 	}
 
+	return c.putMovement(sim, tx, req.MovementID, models.MoveRedeem, req.WalletID, "", req.Amount, req.Salt)
+}
+
+func (c *CBDCService) putMovement(sim *simulator.MultiNamespaceSimulator, tx TxContext, id, typ, from, to string, amount int64, salt string) (*models.Movement, error) {
+	mv := &models.Movement{
+		DocType:    "movement",
+		MovementID: id,
+		Type:       typ,
+		FromWallet: from,
+		ToWallet:   to,
+		AmountHash: amountHash(id, amount, salt),
+		Status:     "SETTLED",
+		Timestamp:  tx.Timestamp,
+		TxID:       tx.TxID,
+	}
+	if err := sim.PutJSON(c.ns.Public, movementKey(id), mv); err != nil {
+		return nil, err
+	}
 	return mv, nil
 }
 
-// ─── Consolidation & Balance Queries ────────────────────────────────────────
+// ─── Consolidation & Queries ────────────────────────────────────────────────
 
-func (c *CBDCService) ConsolidateBalance(sim *simulator.MultiNamespaceSimulator, callerMSP, txID, walletID string) (int64, error) {
-	w, err := c.getOwnedWallet(sim, callerMSP, walletID)
+// ConsolidateBalance folds the wallet's pending credits into its settled balance.
+func (c *CBDCService) ConsolidateBalance(sim *simulator.MultiNamespaceSimulator, tx TxContext, walletID string) (int64, error) {
+	w, err := c.getOwnedWallet(sim, tx.CallerMSP, walletID)
 	if err != nil {
 		return 0, err
 	}
-	bal, _, err := c.consolidate(sim, w, txID)
+	bal, folded, err := c.consolidate(sim, tx, w)
 	if err != nil {
 		return 0, err
+	}
+	if folded == 0 {
+		return 0, fail(ErrInvalidState, "wallet %s has no pending credits", walletID)
 	}
 	return bal.Balance, nil
 }
@@ -403,27 +452,24 @@ func (c *CBDCService) CheckBalance(sim *simulator.MultiNamespaceSimulator, calle
 	if err != nil {
 		return nil, err
 	}
-
-	ownerPDC := models.PDCNameForMSP(w.OwnerMSP)
-	var bal models.PrivateBalance
-	ok, err := sim.GetJSON(ownerPDC, balanceKey(walletID), &bal)
+	bal, err := c.balance(sim, w)
 	if err != nil {
 		return nil, err
 	}
-	if !ok {
-		return nil, fail(ErrNotFound, "private balance of %s not found", walletID)
-	}
-
-	credits, err := c.pendingCredits(sim, w)
+	credits, err := c.pendingCredits(sim, w.WalletID)
 	if err != nil {
 		return nil, err
 	}
 
+	var pending int64
+	for _, cr := range credits {
+		pending += cr.Amount
+	}
 	return &models.BalanceView{
 		WalletID:       walletID,
 		Settled:        bal.Balance,
-		PendingCredits: credits,
-		Available:      bal.Balance + credits,
+		PendingCredits: pending,
+		Available:      bal.Balance + pending,
 	}, nil
 }
 
@@ -433,7 +479,7 @@ func (c *CBDCService) QueryWallet(sim *simulator.MultiNamespaceSimulator, wallet
 
 func (c *CBDCService) QueryMovement(sim *simulator.MultiNamespaceSimulator, movementID string) (*models.Movement, error) {
 	var m models.Movement
-	ok, err := sim.GetJSON(c.PublicNS, movementKey(movementID), &m)
+	ok, err := sim.GetJSON(c.ns.Public, movementKey(movementID), &m)
 	if err != nil {
 		return nil, err
 	}
@@ -452,22 +498,22 @@ func (c *CBDCService) VerifyMovementAmount(sim *simulator.MultiNamespaceSimulato
 }
 
 func (c *CBDCService) QueryTotalSupply(sim *simulator.MultiNamespaceSimulator, callerMSP string) (*models.SupplyView, error) {
-	if callerMSP != models.CentralBankMSP {
-		return nil, fail(ErrAccessDenied, "caller MSP %s is not authorised (allowed: %s)", callerMSP, models.CentralBankMSP)
-	}
-
-	deltas, err := sim.ListPrefix(c.CBNamespace, models.PrefixSupply)
-	if err != nil {
+	if err := requireCentralBank(callerMSP); err != nil {
 		return nil, err
 	}
 
+	deltas, err := sim.ListPrefix(c.ns.Supply, models.PrefixSupply)
+	if err != nil {
+		return nil, err
+	}
 	view := &models.SupplyView{}
-	for _, raw := range deltas {
+	for k, raw := range deltas {
 		var d models.SupplyDelta
-		if err := json.Unmarshal(raw, &d); err == nil {
-			view.TotalSupply += d.Delta
-			view.Entries++
+		if err := json.Unmarshal(raw, &d); err != nil {
+			return nil, fmt.Errorf("corrupt supply record %s: %w", k, err)
 		}
+		view.TotalSupply += d.Delta
+		view.Entries++
 	}
 	return view, nil
 }
@@ -475,8 +521,11 @@ func (c *CBDCService) QueryTotalSupply(sim *simulator.MultiNamespaceSimulator, c
 // ─── Internal Helpers ───────────────────────────────────────────────────────
 
 func (c *CBDCService) getWallet(sim *simulator.MultiNamespaceSimulator, id string) (*models.Wallet, error) {
+	if id == "" {
+		return nil, fail(ErrInvalidArgument, "walletId must not be empty")
+	}
 	var w models.Wallet
-	ok, err := sim.GetJSON(c.PublicNS, walletKey(id), &w)
+	ok, err := sim.GetJSON(c.ns.Public, walletKey(id), &w)
 	if err != nil {
 		return nil, err
 	}
@@ -521,9 +570,9 @@ func (c *CBDCService) getOwnedActiveWallet(sim *simulator.MultiNamespaceSimulato
 
 func (c *CBDCService) requireNewMovement(sim *simulator.MultiNamespaceSimulator, id string) error {
 	if id == "" {
-		return fail(ErrInvalidArgument, "movementID must not be empty")
+		return fail(ErrInvalidArgument, "movementId must not be empty")
 	}
-	existing, err := sim.Get(c.PublicNS, movementKey(id))
+	existing, err := sim.Get(c.ns.Public, movementKey(id))
 	if err != nil {
 		return err
 	}
@@ -533,68 +582,79 @@ func (c *CBDCService) requireNewMovement(sim *simulator.MultiNamespaceSimulator,
 	return nil
 }
 
-func (c *CBDCService) pendingCredits(sim *simulator.MultiNamespaceSimulator, w *models.Wallet) (int64, error) {
-	ownerPDC := models.PDCNameForMSP(w.OwnerMSP)
-	prefix := models.PrefixCredit + w.WalletID + "~"
-	rows, err := sim.ListPrefix(ownerPDC, prefix)
-	if err != nil {
-		return 0, err
+// balance returns the wallet's settled balance; a missing record is a zero balance.
+func (c *CBDCService) balance(sim *simulator.MultiNamespaceSimulator, w *models.Wallet) (*models.PrivateBalance, error) {
+	bal := &models.PrivateBalance{WalletID: w.WalletID}
+	if _, err := sim.GetJSON(c.BalanceNamespace(w.OwnerMSP), balanceKey(w.WalletID), bal); err != nil {
+		return nil, err
 	}
-	var sum int64
-	for _, raw := range rows {
-		var cr models.PrivateCredit
-		if err := json.Unmarshal(raw, &cr); err == nil {
-			sum += cr.Amount
-		}
-	}
-	return sum, nil
+	return bal, nil
 }
 
-func (c *CBDCService) consolidate(sim *simulator.MultiNamespaceSimulator, w *models.Wallet, txID string) (*models.PrivateBalance, int64, error) {
-	ownerPDC := models.PDCNameForMSP(w.OwnerMSP)
-	var bal models.PrivateBalance
-	ok, err := sim.GetJSON(ownerPDC, balanceKey(w.WalletID), &bal)
+// pendingCredits returns the wallet's unconsolidated credits keyed by state key.
+func (c *CBDCService) pendingCredits(sim *simulator.MultiNamespaceSimulator, walletID string) (map[string]models.PrivateCredit, error) {
+	rows, err := sim.ListPrefix(c.ns.Credits, creditPrefix(walletID))
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
-	if !ok {
-		return nil, 0, fail(ErrNotFound, "private balance of %s not found", w.WalletID)
-	}
-
-	prefix := models.PrefixCredit + w.WalletID + "~"
-	rows, err := sim.ListPrefix(ownerPDC, prefix)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	if len(rows) == 0 {
-		return &bal, 0, nil
-	}
-
-	var sum int64
+	out := make(map[string]models.PrivateCredit, len(rows))
 	for k, raw := range rows {
 		var cr models.PrivateCredit
-		if err := json.Unmarshal(raw, &cr); err == nil {
-			sum += cr.Amount
+		if err := json.Unmarshal(raw, &cr); err != nil {
+			return nil, fmt.Errorf("corrupt credit record %s: %w", k, err)
 		}
-		if err := sim.Del(ownerPDC, k); err != nil {
+		out[k] = cr
+	}
+	return out, nil
+}
+
+// consolidate folds pending credits into the balance and records the payee's audit copy
+// of each movement. It returns the new balance and the amount folded in.
+func (c *CBDCService) consolidate(sim *simulator.MultiNamespaceSimulator, tx TxContext, w *models.Wallet) (*models.PrivateBalance, int64, error) {
+	bal, err := c.balance(sim, w)
+	if err != nil {
+		return nil, 0, err
+	}
+	credits, err := c.pendingCredits(sim, w.WalletID)
+	if err != nil {
+		return nil, 0, err
+	}
+	if len(credits) == 0 {
+		return bal, 0, nil
+	}
+
+	ownerNS := c.BalanceNamespace(w.OwnerMSP)
+	var sum int64
+	for k, cr := range credits {
+		sum += cr.Amount
+		if err := sim.Del(c.ns.Credits, k); err != nil {
+			return nil, 0, err
+		}
+		detail := &models.PrivateMovement{
+			MovementID: cr.MovementID,
+			Type:       cr.Type,
+			FromWallet: cr.FromWallet,
+			ToWallet:   w.WalletID,
+			Amount:     cr.Amount,
+			Salt:       cr.Salt,
+			Timestamp:  cr.Timestamp,
+		}
+		if err := sim.PutJSON(ownerNS, moveDetailKey(cr.MovementID), detail); err != nil {
 			return nil, 0, err
 		}
 	}
 
 	bal.Balance += sum
-	bal.Salt = txID
-	bal.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-
-	if err := sim.PutJSON(ownerPDC, balanceKey(w.WalletID), &bal); err != nil {
+	bal.Salt = tx.TxID
+	bal.UpdatedAt = tx.Timestamp
+	if err := sim.PutJSON(ownerNS, balanceKey(w.WalletID), bal); err != nil {
 		return nil, 0, err
 	}
-
-	return &bal, sum, nil
+	return bal, sum, nil
 }
 
-func (c *CBDCService) debit(sim *simulator.MultiNamespaceSimulator, w *models.Wallet, amount int64, txID string) error {
-	bal, _, err := c.consolidate(sim, w, txID)
+func (c *CBDCService) debit(sim *simulator.MultiNamespaceSimulator, tx TxContext, w *models.Wallet, amount int64) error {
+	bal, _, err := c.consolidate(sim, tx, w)
 	if err != nil {
 		return err
 	}
@@ -603,9 +663,7 @@ func (c *CBDCService) debit(sim *simulator.MultiNamespaceSimulator, w *models.Wa
 	}
 
 	bal.Balance -= amount
-	bal.Salt = txID
-	bal.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-
-	ownerPDC := models.PDCNameForMSP(w.OwnerMSP)
-	return sim.PutJSON(ownerPDC, balanceKey(w.WalletID), bal)
+	bal.Salt = tx.TxID
+	bal.UpdatedAt = tx.Timestamp
+	return sim.PutJSON(c.BalanceNamespace(w.OwnerMSP), balanceKey(w.WalletID), bal)
 }

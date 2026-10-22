@@ -1,21 +1,24 @@
-# Multi-stage build for Fabric-X Endorser REST Client
-FROM golang:1.24-alpine AS builder
+# Multi-stage build for the Fabric-X Endorser REST Client
+FROM golang:1.27-alpine AS builder
 
-WORKDIR /app
+WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /x-client cmd/server/main.go
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /x-client ./cmd/server
 
-FROM alpine:latest
-RUN apk --no-cache add ca-certificates curl
+FROM alpine:3.22
+RUN apk --no-cache add ca-certificates curl \
+    && adduser -D -u 10001 xclient
 
-WORKDIR /root/
+WORKDIR /app
 COPY --from=builder /x-client /usr/local/bin/x-client
-COPY config/config.yaml /root/config/config.yaml
+COPY config/ /app/config/
 
+# Crypto material is mounted at /app/crypto by docker-compose.3org.yaml.
+USER xclient
 EXPOSE 8080
 
 ENTRYPOINT ["x-client"]
-CMD ["-config", "/root/config/config.yaml"]
+CMD ["-config", "/app/config/config.yaml"]

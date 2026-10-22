@@ -2,7 +2,6 @@ package models
 
 import "strings"
 
-
 // Participant types.
 const (
 	ParticipantCentralBank = "central_bank"
@@ -32,23 +31,27 @@ const (
 	PrefixSupply     = "SUPPLY~"
 )
 
-// Default Namespace Names.
+// Default namespace names and the Central Bank MSP ID.
 const (
-	DefaultPublicNamespace = "cbdc_public"
-	DefaultCentralBankPDC  = "cbdc_cb_pdc"
-	CentralBankMSP         = "CentralBankMSP"
+	DefaultPublicNamespace  = "cbdc_public"
+	DefaultCentralBankPDC   = "cbdc_cb_pdc"
+	DefaultCreditsNamespace = "cbdc_credits"
+	CentralBankMSP          = "CentralBankMSP"
 )
 
-
-// PDCNameForMSP returns the private namespace for a given MSP ID.
+// PDCNameForMSP returns the balance namespace owned by an MSP:
+// "Org1MSP" -> "cbdc_org1_pdc". The Central Bank keeps its own balances in its
+// supply namespace, which only it may endorse.
 func PDCNameForMSP(mspID string) string {
-	// Strip "MSP" suffix and make lowercase to conform to Fabric-X namespace naming
+	if mspID == CentralBankMSP {
+		return DefaultCentralBankPDC
+	}
 	clean := strings.ToLower(strings.TrimSuffix(mspID, "MSP"))
 	return "cbdc_" + clean + "_pdc"
 }
 
 // Wallet is the public record of a wholesale CBDC wallet.
-// Key: WALLET_<walletId>
+// Namespace: cbdc_public   Key: WALLET_<walletId>
 type Wallet struct {
 	DocType         string `json:"docType"`
 	WalletID        string `json:"walletId"`
@@ -62,7 +65,7 @@ type Wallet struct {
 
 // Movement is the public, amount-free record of a mint, transfer or redemption.
 // AmountHash = SHA-256(movementId | amount | salt)
-// Key: MOVE_<movementId>
+// Namespace: cbdc_public   Key: MOVE_<movementId>
 type Movement struct {
 	DocType    string `json:"docType"`
 	MovementID string `json:"movementId"`
@@ -75,8 +78,8 @@ type Movement struct {
 	TxID       string `json:"txId"`
 }
 
-// PrivateBalance is a wallet's consolidated balance.
-// Namespace: <OwnerMSP>_pdc   Key: BAL_<walletId>
+// PrivateBalance is a wallet's consolidated balance. A missing record reads as zero.
+// Namespace: PDCNameForMSP(owner)   Key: BAL_<walletId>
 type PrivateBalance struct {
 	WalletID  string `json:"walletId"`
 	Balance   int64  `json:"balance"`
@@ -84,18 +87,22 @@ type PrivateBalance struct {
 	UpdatedAt string `json:"updatedAt"`
 }
 
-// PrivateCredit is an incoming credit not yet consolidated into the balance.
-// Namespace: <OwnerMSP>_pdc   Key: CREDIT~<walletId>~<movementId>
+// PrivateCredit is an incoming credit not yet consolidated into the balance. Credits live
+// in a Central Bank endorsed namespace so a payee does not have to sign incoming payments.
+// Namespace: cbdc_credits   Key: CREDIT~<walletId>~<movementId>
 type PrivateCredit struct {
 	WalletID   string `json:"walletId"`
 	MovementID string `json:"movementId"`
+	Type       string `json:"type"`
 	FromWallet string `json:"fromWallet,omitempty"`
 	Amount     int64  `json:"amount"`
 	Salt       string `json:"salt"`
+	Timestamp  string `json:"timestamp"`
 }
 
-// PrivateMovement holds the confidential details of a movement for party audit trails.
-// Namespace: <MSP>_pdc   Key: MOVEDETAIL_<movementId>
+// PrivateMovement holds the confidential details of a movement for a party's audit trail.
+// The payer's copy is written with the movement, the payee's copy on consolidation.
+// Namespace: PDCNameForMSP(party)   Key: MOVEDETAIL_<movementId>
 type PrivateMovement struct {
 	MovementID string `json:"movementId"`
 	Type       string `json:"type"`
@@ -107,17 +114,11 @@ type PrivateMovement struct {
 }
 
 // SupplyDelta records a change in CBDC in circulation (+mint, -redeem).
-// Namespace: CentralBankPDC   Key: SUPPLY~<movementId>
+// Namespace: cbdc_cb_pdc   Key: SUPPLY~<movementId>
 type SupplyDelta struct {
 	MovementID string `json:"movementId"`
 	Delta      int64  `json:"delta"`
 	Timestamp  string `json:"timestamp"`
-}
-
-// AmountInput is the confidential payload for MintCBDC, TransferCBDC, RedeemCBDC.
-type AmountInput struct {
-	Amount int64  `json:"amount"`
-	Salt   string `json:"salt"` // >= 16 random characters
 }
 
 // BalanceView is returned by CheckBalance.
@@ -142,8 +143,15 @@ type CreateWalletRequest struct {
 	ParticipantType string `json:"participantType"` // "bank" or "central_bank"
 }
 
-type FreezeWalletRequest struct {
-	Reason string `json:"reason"`
+// WalletStatusRequest freezes or unfreezes a wallet. WalletID comes from the URL path.
+type WalletStatusRequest struct {
+	WalletID string `json:"walletId"`
+	Reason   string `json:"reason,omitempty"`
+}
+
+// ConsolidateRequest folds pending credits into a balance. WalletID comes from the URL path.
+type ConsolidateRequest struct {
+	WalletID string `json:"walletId"`
 }
 
 type MintCBDCRequest struct {
@@ -169,25 +177,24 @@ type RedeemCBDCRequest struct {
 }
 
 type VerifyMovementRequest struct {
-	MovementID string `json:"movementId"`
-	Amount     int64  `json:"amount"`
-	Salt       string `json:"salt"`
+	Amount int64  `json:"amount"`
+	Salt   string `json:"salt"`
 }
 
-// ReadRecord represents a read operation on a key with its version.
+// ReadRecord is a read of a key at a version. A nil version means "key must not exist".
 type ReadRecord struct {
 	Key     string  `json:"key"`
 	Version *uint64 `json:"version"`
 }
 
-// WriteRecord represents a write operation on a key.
+// WriteRecord is a write of a key. An empty value deletes the key.
 type WriteRecord struct {
 	Key     string  `json:"key"`
-	Version *uint64 `json:"version,omitempty"` // For ReadWrites: the version read before update
-	Value   string  `json:"value"`             // JSON or string payload
+	Version *uint64 `json:"version,omitempty"` // read-writes: the version read before the update
+	Value   string  `json:"value"`
 }
 
-// NamespaceReadWriteSet represents the Fabric-X Read/Write Set for one namespace.
+// NamespaceReadWriteSet is a JSON view of one Fabric-X TxNamespace.
 type NamespaceReadWriteSet struct {
 	Namespace   string        `json:"namespace"`
 	NsVersion   uint64        `json:"nsVersion"`
@@ -196,26 +203,36 @@ type NamespaceReadWriteSet struct {
 	BlindWrites []WriteRecord `json:"blindWrites,omitempty"`
 }
 
-// EndorsementSignature represents the endorser's cryptographic signature.
-type EndorsementSignature struct {
+// EndorsementInfo describes one endorsement attached to a namespace.
+type EndorsementInfo struct {
+	Namespace   string `json:"namespace"`
 	EndorserMSP string `json:"endorserMsp"`
-	Identity    string `json:"identity"`    // base64 / PEM / ID string
-	Signature   string `json:"signature"`   // hex-encoded ECDSA signature
-	Timestamp   string `json:"timestamp"`
+	Signature   string `json:"signature"` // hex-encoded DER ECDSA signature
 }
 
-// EndorsementResponse is the standard REST response containing the generated Read/Write set.
+// Transaction outcomes reported by mutation endpoints.
+const (
+	TxStatusCommitted = "COMMITTED" // committed to the ledger
+	TxStatusEndorsed  = "ENDORSED"  // fully endorsed, not submitted (?submit=false)
+	TxStatusSubmitted = "SUBMITTED" // broadcast, commit status not known before the timeout
+	TxStatusQueried   = "QUERIED"   // read-only query
+)
+
+// EndorsementResponse is returned by every endpoint. Mutations carry the endorsed
+// read/write set and, depending on how far the transaction got, its ledger status
+// or the signed envelope.
 type EndorsementResponse struct {
-	TxID         string                           `json:"txId"`
-	Status       string                           `json:"status"` // "ENDORSED" or "QUERIED"
+	TxID         string                           `json:"txId,omitempty"`
+	Status       string                           `json:"status"`
 	Payload      any                              `json:"payload,omitempty"`
 	ReadWriteSet map[string]NamespaceReadWriteSet `json:"readWriteSet,omitempty"`
-	Endorsement  *EndorsementSignature            `json:"endorsement,omitempty"`
+	Endorsements []EndorsementInfo                `json:"endorsements,omitempty"`
+	Envelope     string                           `json:"envelope,omitempty"` // base64 common.Envelope
 }
 
 // ErrorResponse represents an error return from the REST API.
 type ErrorResponse struct {
-	Error   string `json:"error"`
-	Code    string `json:"code,omitempty"`
-	Details string `json:"details,omitempty"`
+	Error string `json:"error"`
+	Code  string `json:"code,omitempty"`
+	TxID  string `json:"txId,omitempty"`
 }

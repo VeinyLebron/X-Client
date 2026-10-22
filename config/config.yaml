@@ -1,34 +1,23 @@
+# Standalone X-Client: in-memory ledger, one process holding throwaway keys for all
+# three organizations. Transactions are fully endorsed and committed locally, so the
+# complete CBDC flow works without a Fabric-X network. The X-Caller-MSP header picks
+# the acting organization. For the real network use centralbank.yaml, bank_a.yaml and
+# bank_b.yaml against fabric-x-samples/devnet-3org.
+
 server:
-  port: 8080
   host: "0.0.0.0"
+  port: ${PORT:-8080}
+  api_token: "${API_TOKEN:-}"
 
-# Mode: "grpc" to connect to the live Query Service container
-mode: "grpc"
-
-query_service:
-  endpoint: "localhost:7001"
-  tls:
-    enabled: true
-    ca_cert: "crypto/bank_a/ca.crt"
-    client_cert: "crypto/bank_a/tls_client.crt"
-    client_key: "crypto/bank_a/tls_client.key"
-
+mode: "in-memory"
+channel_id: "mychannel"
 default_msp_id: "CentralBankMSP"
-
-endorsers:
-  CentralBankMSP:
-    msp_id: "CentralBankMSP"
-    cert_path: "crypto/centralbank/cert.pem"
-    key_path: "crypto/centralbank/priv_sk"
-  Org1MSP:
-    msp_id: "Org1MSP"
-    cert_path: "crypto/bank_a/cert.pem"
-    key_path: "crypto/bank_a/priv_sk"
-  Org2MSP:
-    msp_id: "Org2MSP"
-    cert_path: "crypto/bank_b/cert.pem"
-    key_path: "crypto/bank_b/priv_sk"
+allow_caller_header: true
 
 namespaces:
   public: "cbdc_public"
   central_bank_pdc: "cbdc_cb_pdc"
+  credits: "cbdc_credits"
+  banks:
+    Org1MSP: "cbdc_org1_pdc"
+    Org2MSP: "cbdc_org2_pdc"
