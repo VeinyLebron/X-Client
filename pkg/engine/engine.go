@@ -439,17 +439,23 @@ func describe(nss []*applicationpb.TxNamespace, ends []*applicationpb.Endorsemen
 // policies the namespaces were registered with (see devnet-3org `make init-namespace-cbdc`).
 type Policies map[string][]string
 
-// DefaultPolicies returns the wholesale CBDC policy layout: the Central Bank co-signs
-// every namespace and each bank additionally signs its own balance namespace.
+// DefaultPolicies returns the wholesale CBDC policy layout: the issuer (central bank)
+// co-signs every namespace and each bank additionally signs its own balance namespace.
+// A bank that is also the issuer signs its balance namespace alone.
 func DefaultPolicies(svc *contract.CBDCService, bankMSPs []string) Policies {
 	ns := svc.Namespaces()
+	issuer := ns.CentralBankMSP
 	p := Policies{
-		ns.Public:  {models.CentralBankMSP},
-		ns.Supply:  {models.CentralBankMSP},
-		ns.Credits: {models.CentralBankMSP},
+		ns.Public:  {issuer},
+		ns.Supply:  {issuer},
+		ns.Credits: {issuer},
 	}
 	for _, msp := range bankMSPs {
-		p[svc.BalanceNamespace(msp)] = []string{msp, models.CentralBankMSP}
+		signers := []string{msp}
+		if msp != issuer {
+			signers = append(signers, issuer)
+		}
+		p[svc.BalanceNamespace(msp)] = signers
 	}
 	return p
 }

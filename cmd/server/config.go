@@ -58,7 +58,9 @@ type Config struct {
 	Mode      string `yaml:"mode"`
 	ChannelID string `yaml:"channel_id"`
 
-	// DefaultMSPID is the organization this instance acts as.
+	// CentralBankMSP is the issuer: it creates wallets, mints and co-signs every transaction.
+	CentralBankMSP string `yaml:"central_bank_msp"`
+	// DefaultMSPID is the organization this instance acts as (defaults to the issuer).
 	DefaultMSPID string `yaml:"default_msp_id"`
 	// AllowCallerHeader lets requests choose the acting MSP with X-Caller-MSP. Only for a
 	// single trusted process holding several organizations' keys.
@@ -91,7 +93,7 @@ func loadConfig(path string) (*Config, error) {
 	cfg.Server.Host = "0.0.0.0"
 	cfg.Mode = "in-memory"
 	cfg.ChannelID = "mychannel"
-	cfg.DefaultMSPID = models.CentralBankMSP
+	cfg.CentralBankMSP = models.CentralBankMSP
 	cfg.CommitTimeout = 30 * time.Second
 
 	data, err := os.ReadFile(path)
@@ -124,6 +126,9 @@ func loadConfig(path string) (*Config, error) {
 	}
 	if tok := os.Getenv("API_TOKEN"); tok != "" {
 		cfg.Server.APIToken = tok
+	}
+	if cfg.DefaultMSPID == "" {
+		cfg.DefaultMSPID = cfg.CentralBankMSP
 	}
 	return cfg, cfg.validate()
 }
@@ -161,6 +166,7 @@ func (c *Config) validate() error {
 // namespaces returns the contract's namespace layout, filling in defaults.
 func (c *Config) namespaces() contract.Namespaces {
 	ns := contract.DefaultNamespaces()
+	ns.CentralBankMSP = c.CentralBankMSP
 	if c.Namespaces.Public != "" {
 		ns.Public = c.Namespaces.Public
 	}

@@ -207,11 +207,16 @@ type orgNode struct {
 func newNetwork(t *testing.T) (map[string]*orgNode, *contract.CBDCService, *store.InMemoryStore) {
 	t.Helper()
 	svc := newService()
+	return newNetworkWith(t, svc, engine.DefaultPolicies(svc, banks), cb, bankA, bankB)
+}
+
+// newNetworkWith starts one X-Client per MSP in msps with the given contract and policies.
+func newNetworkWith(t *testing.T, svc *contract.CBDCService, policies engine.Policies, msps ...string) (map[string]*orgNode, *contract.CBDCService, *store.InMemoryStore) {
+	t.Helper()
 	mem := store.NewInMemoryStore()
-	policies := engine.DefaultPolicies(svc, banks)
 
 	nodes := map[string]*orgNode{}
-	for _, msp := range []string{cb, bankA, bankB} {
+	for _, msp := range msps {
 		id, err := endorser.Generate(msp)
 		if err != nil {
 			t.Fatal(err)

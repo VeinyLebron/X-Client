@@ -16,7 +16,7 @@ WORKDIR /app
 COPY --from=builder /x-client /usr/local/bin/x-client
 COPY config/ /app/config/
 
-# Crypto material is mounted at /app/crypto by docker-compose.3org.yaml.
+# Crypto material is mounted at /app/crypto by docker-compose.2org.yaml.
 USER xclient
 EXPOSE 8080
 

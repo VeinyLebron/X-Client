@@ -88,20 +88,24 @@ func creditKey(toWallet, movementID string) string {
 	return creditPrefix(toWallet) + movementID
 }
 
-// Namespaces names the Fabric-X namespaces the contract uses.
+// Namespaces names the Fabric-X namespaces the contract uses and the issuing MSP.
 type Namespaces struct {
-	Public  string
-	Supply  string            // Central Bank supply ledger and Central Bank balances
-	Credits string            // pending incoming credits for all wallets
-	Banks   map[string]string // MSP ID -> balance namespace; defaults to models.PDCNameForMSP
+	// CentralBankMSP is the issuer: it creates and freezes wallets, mints, and reads total
+	// supply. It may also be a bank (listed in Banks), as Org1 is on the 2-org network.
+	CentralBankMSP string
+	Public         string
+	Supply         string            // supply ledger, and issuer balances unless it is in Banks
+	Credits        string            // pending incoming credits for all wallets
+	Banks          map[string]string // MSP ID -> balance namespace; defaults to models.PDCNameForMSP
 }
 
 // DefaultNamespaces returns the namespace layout registered by devnet-3org.
 func DefaultNamespaces() Namespaces {
 	return Namespaces{
-		Public:  models.DefaultPublicNamespace,
-		Supply:  models.DefaultCentralBankPDC,
-		Credits: models.DefaultCreditsNamespace,
+		CentralBankMSP: models.CentralBankMSP,
+		Public:         models.DefaultPublicNamespace,
+		Supply:         models.DefaultCentralBankPDC,
+		Credits:        models.DefaultCreditsNamespace,
 	}
 }
 
@@ -117,13 +121,14 @@ func NewCBDCService(ns Namespaces) *CBDCService {
 // Namespaces returns the namespace layout in use.
 func (c *CBDCService) Namespaces() Namespaces { return c.ns }
 
-// BalanceNamespace returns the namespace holding balances owned by mspID.
+// BalanceNamespace returns the namespace holding balances owned by mspID. A bank's own
+// namespace wins over the issuer's supply namespace when the issuer is also a bank.
 func (c *CBDCService) BalanceNamespace(mspID string) string {
-	if mspID == models.CentralBankMSP {
-		return c.ns.Supply
-	}
 	if ns, ok := c.ns.Banks[mspID]; ok {
 		return ns
+	}
+	if mspID == c.ns.CentralBankMSP {
+		return c.ns.Supply
 	}
 	return models.PDCNameForMSP(mspID)
 }
@@ -190,9 +195,9 @@ func decode(raw json.RawMessage, v any) error {
 	return nil
 }
 
-func requireCentralBank(callerMSP string) error {
-	if callerMSP != models.CentralBankMSP {
-		return fail(ErrAccessDenied, "caller MSP %s is not authorised (allowed: %s)", callerMSP, models.CentralBankMSP)
+func (c *CBDCService) requireCentralBank(callerMSP string) error {
+	if callerMSP != c.ns.CentralBankMSP {
+		return fail(ErrAccessDenied, "caller MSP %s is not authorised (allowed: %s)", callerMSP, c.ns.CentralBankMSP)
 	}
 	return nil
 }
@@ -212,7 +217,7 @@ func validateAmount(amount int64, salt string) error {
 // CreateWallet registers a wallet. Its balance record is created on first consolidation,
 // so wallet creation needs only the Central Bank's endorsement.
 func (c *CBDCService) CreateWallet(sim *simulator.MultiNamespaceSimulator, tx TxContext, req models.CreateWalletRequest) (*models.Wallet, error) {
-	if err := requireCentralBank(tx.CallerMSP); err != nil {
+	if err := c.requireCentralBank(tx.CallerMSP); err != nil {
 		return nil, err
 	}
 	if req.WalletID == "" || req.OwnerMSP == "" {
@@ -221,8 +226,11 @@ func (c *CBDCService) CreateWallet(sim *simulator.MultiNamespaceSimulator, tx Tx
 	if req.ParticipantType != models.ParticipantBank && req.ParticipantType != models.ParticipantCentralBank {
 		return nil, fail(ErrInvalidArgument, "participantType must be one of bank, central_bank")
 	}
-	if (req.ParticipantType == models.ParticipantCentralBank) != (req.OwnerMSP == models.CentralBankMSP) {
-		return nil, fail(ErrInvalidArgument, "participantType central_bank is reserved for %s", models.CentralBankMSP)
+	if req.ParticipantType == models.ParticipantCentralBank && req.OwnerMSP != c.ns.CentralBankMSP {
+		return nil, fail(ErrInvalidArgument, "participantType central_bank is reserved for %s", c.ns.CentralBankMSP)
+	}
+	if req.ParticipantType == models.ParticipantBank && req.OwnerMSP == c.ns.CentralBankMSP && c.ns.Banks[req.OwnerMSP] == "" {
+		return nil, fail(ErrInvalidArgument, "%s is not configured as a bank; use participantType central_bank", req.OwnerMSP)
 	}
 
 	existing, err := sim.Get(c.ns.Public, walletKey(req.WalletID))
@@ -249,7 +257,7 @@ func (c *CBDCService) CreateWallet(sim *simulator.MultiNamespaceSimulator, tx Tx
 }
 
 func (c *CBDCService) FreezeWallet(sim *simulator.MultiNamespaceSimulator, tx TxContext, req models.WalletStatusRequest) (*models.Wallet, error) {
-	if err := requireCentralBank(tx.CallerMSP); err != nil {
+	if err := c.requireCentralBank(tx.CallerMSP); err != nil {
 		return nil, err
 	}
 	if req.Reason == "" {
@@ -259,7 +267,7 @@ func (c *CBDCService) FreezeWallet(sim *simulator.MultiNamespaceSimulator, tx Tx
 }
 
 func (c *CBDCService) UnfreezeWallet(sim *simulator.MultiNamespaceSimulator, tx TxContext, req models.WalletStatusRequest) (*models.Wallet, error) {
-	if err := requireCentralBank(tx.CallerMSP); err != nil {
+	if err := c.requireCentralBank(tx.CallerMSP); err != nil {
 		return nil, err
 	}
 	return c.setWalletStatus(sim, tx, req.WalletID, models.WalletActive, "")
@@ -287,7 +295,7 @@ func (c *CBDCService) setWalletStatus(sim *simulator.MultiNamespaceSimulator, tx
 
 // MintCBDC issues new CBDC as a pending credit to the payee's wallet.
 func (c *CBDCService) MintCBDC(sim *simulator.MultiNamespaceSimulator, tx TxContext, req models.MintCBDCRequest) (*models.Movement, error) {
-	if err := requireCentralBank(tx.CallerMSP); err != nil {
+	if err := c.requireCentralBank(tx.CallerMSP); err != nil {
 		return nil, err
 	}
 	if err := validateAmount(req.Amount, req.Salt); err != nil {
@@ -498,7 +506,7 @@ func (c *CBDCService) VerifyMovementAmount(sim *simulator.MultiNamespaceSimulato
 }
 
 func (c *CBDCService) QueryTotalSupply(sim *simulator.MultiNamespaceSimulator, callerMSP string) (*models.SupplyView, error) {
-	if err := requireCentralBank(callerMSP); err != nil {
+	if err := c.requireCentralBank(callerMSP); err != nil {
 		return nil, err
 	}
 

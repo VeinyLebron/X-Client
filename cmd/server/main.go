@@ -23,7 +23,6 @@ import (
 	"x-client/pkg/endorser"
 	"x-client/pkg/engine"
 	"x-client/pkg/fabricx"
-	"x-client/pkg/models"
 	"x-client/pkg/peers"
 	"x-client/pkg/store"
 )
@@ -224,7 +223,7 @@ func logStartup(cfg *Config, registry *endorser.Registry, policies engine.Polici
 	log.Println("=================================================================")
 	log.Printf(" REST API            : http://%s:%d", cfg.Server.Host, cfg.Server.Port)
 	log.Printf(" Mode                : %s (channel %s)", cfg.Mode, cfg.ChannelID)
-	log.Printf(" Acting as           : %s", cfg.DefaultMSPID)
+	log.Printf(" Acting as           : %s (issuer: %s)", cfg.DefaultMSPID, cfg.CentralBankMSP)
 	log.Printf(" Local signing keys  : %v", slices.Sorted(slices.Values(registry.MSPIDs())))
 	for _, ns := range slices.Sorted(maps.Keys(policies)) {
 		log.Printf(" Policy %-14s: AND%v", ns, policies[ns])
@@ -238,7 +237,7 @@ func logStartup(cfg *Config, registry *endorser.Registry, policies engine.Polici
 	if cfg.Server.APIToken == "" && cfg.Mode == "grpc" {
 		log.Printf(" WARNING: no api_token set; restrict network access to the REST API")
 	}
-	if cfg.DefaultMSPID == models.CentralBankMSP && cfg.Mode == "grpc" && len(cfg.Peers) == 0 && registry.Len() == 1 {
+	if cfg.DefaultMSPID == cfg.CentralBankMSP && cfg.Mode == "grpc" && len(cfg.Peers) == 0 && registry.Len() == 1 {
 		log.Printf(" NOTE: no peers configured; bank-owned namespaces cannot be endorsed")
 	}
 	log.Println("=================================================================")

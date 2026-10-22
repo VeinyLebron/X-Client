@@ -1,5 +1,5 @@
 # Standalone X-Client: in-memory ledger, no Fabric-X network required.
-# For the 3-organization deployment against devnet-3org see docker-compose.3org.yaml.
+# For the 2-organization deployment against devnet see docker-compose.2org.yaml.
 
 services:
   x-client:

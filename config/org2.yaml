@@ -1,0 +1,72 @@
+# Org2 (Org2MSP) X-Client for the 2-org network (fabric-x-samples/devnet, `make start-both`).
+# Org2 is a bank. Its transfers, redemptions and consolidations need Org1's co-signature,
+# which this X-Client collects from Org1's X-Client automatically.
+#
+# Defaults target the devnet from the host. The ${VAR:-default} references are overridden
+# by docker-compose.2org.yaml. Every key is described in docs/CONFIGURATION.md.
+
+server:
+  host: "0.0.0.0"
+  port: ${PORT:-8081}
+  api_token: "${API_TOKEN:-}"
+
+mode: "grpc"
+channel_id: "mychannel"
+central_bank_msp: "Org1MSP"
+default_msp_id: "Org2MSP"
+
+endorsers:
+  Org2MSP:
+    cert_path: "crypto/org2/cert.pem"
+    key_path: "crypto/org2/priv_sk"
+
+# Org2's own committer stack.
+query_service:
+  endpoint: "${QS_ENDPOINT:-localhost:7002}"
+  tls: &org_tls
+    mode: "mtls"
+    ca_cert_paths: ["crypto/org2/tls/ca.crt"]
+    cert_path: "crypto/org2/tls/client.crt"
+    key_path: "crypto/org2/tls/client.key"
+sidecar:
+  endpoint: "${SIDECAR_ENDPOINT:-localhost:4002}"
+  tls: *org_tls
+
+orderers:
+  - endpoint: "${ROUTER1:-localhost:7050}"
+    tls: &router_tls
+      mode: "mtls"
+      ca_cert_paths: ["crypto/orderer-tls/orderer-org-1.pem", "crypto/orderer-tls/orderer-org-2.pem", "crypto/orderer-tls/orderer-org-3.pem", "crypto/orderer-tls/orderer-org-4.pem"]
+      cert_path: "crypto/org2/tls/client.crt"
+      key_path: "crypto/org2/tls/client.key"
+  - endpoint: "${ROUTER2:-localhost:7150}"
+    tls: *router_tls
+  - endpoint: "${ROUTER3:-localhost:7250}"
+    tls: *router_tls
+  - endpoint: "${ROUTER4:-localhost:7350}"
+    tls: *router_tls
+commit_timeout: 30s
+
+# The other organization's X-Client: where to ask for co-signatures, and whose
+# endorsement requests to accept (authenticated against its MSP CA).
+peers:
+  Org1MSP:
+    endpoint: "${PEER_ORG1:-http://localhost:8080}"
+    msp_ca: "crypto/cas/Org1MSP.pem"
+
+# Must match the namespaces registered in SETUP.md step 3.
+namespaces:
+  public: "cbdc_public"
+  central_bank_pdc: "cbdc_cb_pdc"
+  credits: "cbdc_credits"
+  banks:
+    Org1MSP: "cbdc_org1_pdc"
+    Org2MSP: "cbdc_org2_pdc"
+
+# Signatures to collect per namespace. Defaults (no entry needed) are derived from
+# central_bank_msp and banks:
+#   cbdc_public, cbdc_cb_pdc, cbdc_credits, cbdc_org1_pdc: [Org1MSP]
+#   cbdc_org2_pdc:                                         [Org2MSP, Org1MSP]
+# Override only together with the on-chain policy; see docs/POLICIES.md.
+# endorsement_policies:
+#   cbdc_public: [Org1MSP, Org2MSP]

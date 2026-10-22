@@ -1,4 +1,4 @@
-.PHONY: build test vet fmt run run-centralbank run-bank-a run-bank-b clean docker-build
+.PHONY: build test vet fmt run run-org1 run-org2 clean docker-build
 
 build:
 	go build -o bin/x-client ./cmd/server
@@ -13,19 +13,16 @@ vet:
 fmt:
 	gofmt -w .
 
-# Standalone: in-memory ledger, all three organizations in one process.
+# Standalone: in-memory ledger, both organizations in one process.
 run: build
 	./bin/x-client -config config/config.yaml
 
-# Against fabric-x-samples/devnet-3org (run ./scripts/copy-crypto.sh first).
-run-centralbank: build
-	./bin/x-client -config config/centralbank.yaml
+# Against fabric-x-samples/devnet (run ./scripts/copy-crypto.sh first).
+run-org1: build
+	./bin/x-client -config config/org1.yaml
 
-run-bank-a: build
-	./bin/x-client -config config/bank_a.yaml
-
-run-bank-b: build
-	./bin/x-client -config config/bank_b.yaml
+run-org2: build
+	./bin/x-client -config config/org2.yaml
 
 docker-build:
 	docker build -t fabricx-endorser-client:latest .

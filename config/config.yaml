@@ -1,8 +1,7 @@
-# Standalone X-Client: in-memory ledger, one process holding throwaway keys for all
-# three organizations. Transactions are fully endorsed and committed locally, so the
-# complete CBDC flow works without a Fabric-X network. The X-Caller-MSP header picks
-# the acting organization. For the real network use centralbank.yaml, bank_a.yaml and
-# bank_b.yaml against fabric-x-samples/devnet-3org.
+# Standalone X-Client: in-memory ledger, one process holding throwaway keys for both
+# organizations. Transactions are fully endorsed and committed locally, so the complete
+# CBDC flow works without a Fabric-X network. The X-Caller-MSP header picks the acting
+# organization (default Org1MSP). For the real network use org1.yaml and org2.yaml.
 
 server:
   host: "0.0.0.0"
@@ -11,7 +10,8 @@ server:
 
 mode: "in-memory"
 channel_id: "mychannel"
-default_msp_id: "CentralBankMSP"
+central_bank_msp: "Org1MSP"
+default_msp_id: "Org1MSP"
 allow_caller_header: true
 
 namespaces:

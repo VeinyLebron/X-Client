@@ -1,0 +1,62 @@
+# One X-Client per organization, joined to the fabric-x-samples/devnet network ("fabric-x").
+# Start the devnet with `make start-both` and run ./scripts/copy-crypto.sh first.
+#
+# Each container mounts only its own private keys plus the public CA certificates.
+# Org1 (issuer) co-signs Org2's transactions; Org2 reaches it at x-client-org1:8080.
+
+x-common: &common
+  build:
+    context: .
+    dockerfile: Dockerfile
+  restart: unless-stopped
+  # Run as the host user so the mounted keys (mode 600) are readable, as devnet does.
+  user: "${UID:-1000}:${GID:-1000}"
+  networks:
+    - fabric-x
+
+x-routers: &routers
+  ROUTER1: orderer-party1-router:7050
+  ROUTER2: orderer-party2-router:7150
+  ROUTER3: orderer-party3-router:7250
+  ROUTER4: orderer-party4-router:7350
+
+services:
+  x-client-org1:
+    <<: *common
+    container_name: x-client-org1
+    command: ["-config", "/app/config/org1.yaml"]
+    ports:
+      - "8080:8080"
+    environment:
+      <<: *routers
+      PORT: "8080"
+      QS_ENDPOINT: committer-query-service:7001
+      SIDECAR_ENDPOINT: committer-sidecar:4001
+      PEER_ORG2: http://x-client-org2:8081
+    volumes:
+      - ./crypto/org1:/app/crypto/org1:ro
+      - ./crypto/cas:/app/crypto/cas:ro
+      - ./crypto/orderer-tls:/app/crypto/orderer-tls:ro
+
+  x-client-org2:
+    <<: *common
+    container_name: x-client-org2
+    command: ["-config", "/app/config/org2.yaml"]
+    ports:
+      - "8081:8081"
+    environment:
+      <<: *routers
+      PORT: "8081"
+      QS_ENDPOINT: committer-org2-query-service:7001
+      SIDECAR_ENDPOINT: committer-org2-sidecar:4001
+      PEER_ORG1: http://x-client-org1:8080
+    volumes:
+      - ./crypto/org2:/app/crypto/org2:ro
+      - ./crypto/cas:/app/crypto/cas:ro
+      - ./crypto/orderer-tls:/app/crypto/orderer-tls:ro
+
+networks:
+  # Created by devnet (compose.yaml: networks.fabric-x.name = fabric-x).
+  fabric-x:
+    name: fabric-x
+    external: true
