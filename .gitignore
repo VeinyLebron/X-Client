@@ -33,6 +33,9 @@ crypto/**/*.pem
 !crypto/**/README.md
 !crypto/**/.gitkeep
 README1.md
+docs/ARCHITECTURE.md
+docs/CONFIGURATION.md
+docs/POLICIES.md
 
 # Environment and local overrides
 *.env.local
