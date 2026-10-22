@@ -26,7 +26,7 @@ The network comes from **[X-Setup](https://github.com/VeinyLebron/X-Setup)** (`3
 
 ```bash
 cd ../X-Setup/3-org
-make up          # crypto (first run), orderers + three committer stacks (35 containers), namespaces
+make up          # crypto (first run), orderers + three committer stacks (34 containers), namespaces
 make status      # containers and the 5 namespaces at version 0
 ```
 
