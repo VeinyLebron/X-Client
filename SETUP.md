@@ -38,7 +38,7 @@ make status      # containers and the 5 namespaces at version 0
 | `cbdc_org1_pdc` | `AND('Org1MSP.member','CentralBankMSP.member')` |
 | `cbdc_org2_pdc` | `AND('Org2MSP.member','CentralBankMSP.member')` |
 
-To use different rules, see [docs/POLICIES.md](docs/POLICIES.md); existing namespaces can be changed later with `scripts/update-policy.sh`.
+To use different rules, change the on-chain policy with `scripts/update-policy.sh` and set the same rule under `endorsement_policies` in every X-Client config; the two must agree.
 
 ## 4. Copy crypto material
 
@@ -113,7 +113,7 @@ No network at all: `make run` (or `docker compose up --build`) starts one in-mem
 | X-Client exits: `failed to read CA cert crypto/centralbank/tls/ca.crt` | run `./scripts/copy-crypto.sh` |
 | X-Client exits: `private key does not match certificate` | stale crypto after `make init`; re-run `copy-crypto.sh` |
 | `/healthz` `"ready": false` | key index still replaying blocks, or sidecar unreachable; see `readyError` |
-| `502 ABORTED_SIGNATURE_INVALID` | X-Client collects fewer signatures than the on-chain policy needs; see [docs/POLICIES.md §2](docs/POLICIES.md#2-two-places-that-must-agree) |
+| `502 ABORTED_SIGNATURE_INVALID` | X-Client collects fewer signatures than the on-chain policy needs: the on-chain policy and every config's `endorsement_policies` must match |
 | `503 ENDORSEMENT_UNAVAILABLE` | the X-Clients' `endorsement_policies` differ, or a required MSP is missing from `peers:` |
 | `503 PEER_UNREACHABLE` | the Central Bank X-Client is down or its URL in `peers:` is wrong |
 | `409 ABORTED_MVCC_CONFLICT` | a concurrent transaction touched the same keys; retry |

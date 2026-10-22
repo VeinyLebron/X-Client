@@ -23,7 +23,7 @@ Base URL: the organization's X-Client (`http://localhost:8080` Central Bank, `:8
 | `POST /api/v1/movements/{id}/verify` | anyone | `{amount, salt}` | `{movementId, verified}` |
 | `GET  /api/v1/supply` | Central Bank | – | `{totalSupply, entries}` |
 | `GET  /healthz` | anyone, no token | – | `{status, mode, defaultEndorser, ready}`; `503` while the block sync is catching up |
-| `POST /internal/v1/endorse` | peer X-Clients only | signed `EndorseRequest` | endorsements (see [ARCHITECTURE.md](ARCHITECTURE.md)) |
+| `POST /internal/v1/endorse` | peer X-Clients only | signed `EndorseRequest` | endorsements (internal protocol between X-Clients) |
 
 Field rules:
 - `participantType`: `bank` for bank wallets; `central_bank` for wallets owned by `CentralBankMSP` (and only those).
@@ -86,7 +86,7 @@ Every successful response:
 | 409 | `PROPOSAL_MISMATCH` | the co-signer computed different changes (state lag after one retry, or tampering) |
 | 422 | `INSUFFICIENT_BALANCE`, `ACCOUNT_BLOCKED`, `INVALID_STATE` | business rule (balance, frozen wallet, nothing to consolidate) |
 | 422 | `NO_STATE_CHANGE` | the operation would write nothing |
-| 502 | `ABORTED_SIGNATURE_INVALID` | endorsements do not satisfy the on-chain policy: client and on-chain policies differ ([POLICIES.md](POLICIES.md)) |
+| 502 | `ABORTED_SIGNATURE_INVALID` | endorsements do not satisfy the on-chain policy: client and on-chain policies differ |
 | 502 | other committer status (`MALFORMED_…`) | transaction rejected by the committer |
 | 502 | `PEER_REJECTED` | co-signer failed unexpectedly |
 | 503 | `PEER_UNREACHABLE` | co-signing X-Client is down or unreachable |

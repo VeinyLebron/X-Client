@@ -6,8 +6,8 @@
 #   ./scripts/update-policy.sh <devnet-dir> <namespace> "<policy>"
 #   ./scripts/update-policy.sh ../X-Setup/3-org cbdc_public "AND('CentralBankMSP.member')"
 #
-# The current namespace version is looked up automatically. See docs/POLICIES.md for the
-# matching X-Client configuration change.
+# The current namespace version is looked up automatically. Afterwards set the same rule under
+# endorsement_policies in every X-Client config.
 
 set -euo pipefail
 

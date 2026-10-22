@@ -42,7 +42,7 @@ The namespace endorsement policies are enforced on-chain by the committer, so no
  QS 7001 · sidecar 4001       QS 7003 · sidecar 4003         QS 7002 · sidecar 4002
 ```
 
-How a co-signer decides to sign, called **peer re-execution**: the Central Bank re-runs the same operation on its own copy of the ledger and signs only if it gets byte-identical changes. See the worked example in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#peer-re-execution-worked-example).
+How a co-signer decides to sign, called **peer re-execution**: the Central Bank re-runs the same operation on its own copy of the ledger and signs only if it gets byte-identical changes.
 
 ## Namespaces and policies
 
@@ -62,7 +62,7 @@ Registered by `make up` in `X-Setup/3-org`:
 | transfer, redeem | paying bank | that bank + Central Bank |
 | consolidate | owning bank | that bank + Central Bank |
 
-Payments are held as pending credits in `cbdc_credits`, so **the receiving bank does not have to be online to be paid**. It folds them in with `consolidate`. To change these rules (payee must accept, any 2 of 3, a fourth bank), see **[docs/POLICIES.md](docs/POLICIES.md)**.
+Payments are held as pending credits in `cbdc_credits`, so **the receiving bank does not have to be online to be paid**. It folds them in with `consolidate`. To change these rules, change the on-chain policy with `scripts/update-policy.sh` and set the same rule under `endorsement_policies` in every X-Client config; the two must agree.
 
 > Fabric-X has no private data: every committer stores every namespace. `_pdc` restricts writes, not reads.
 
@@ -94,10 +94,7 @@ curl -X POST localhost:8081/api/v1/movements/transfer -H 'Content-Type: applicat
 | Doc | Contents |
 |---|---|
 | [SETUP.md](SETUP.md) | step-by-step setup, end-to-end flow, troubleshooting |
-| [docs/POLICIES.md](docs/POLICIES.md) | how endorsement policies work and how to change them |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | glossary, transaction lifecycle, peer re-execution, reads, package map |
 | [docs/API.md](docs/API.md) | every endpoint, request and response format, error codes |
-| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | every config key, env variables, TLS, host vs Docker |
 
 ## Repository layout
 
