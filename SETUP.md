@@ -35,7 +35,7 @@ make status      # containers and the 5 namespaces at version 0
 | `cbdc_public`, `cbdc_cb_pdc`, `cbdc_credits`, `cbdc_org1_pdc` | `AND('Org1MSP.member')` |
 | `cbdc_org2_pdc` | `AND('Org2MSP.member','Org1MSP.member')` |
 
-On a plain fabric-x-samples `devnet`, register them yourself with `make init-namespace NS=<name> POLICY="<policy>"` for each row. To use different rules, see [docs/POLICIES.md](docs/POLICIES.md); existing namespaces can be changed later with `scripts/update-policy.sh`.
+On a plain fabric-x-samples `devnet`, register them yourself with `make init-namespace NS=<name> POLICY="<policy>"` for each row. To use different rules, change the on-chain policy with `scripts/update-policy.sh` and set the same rule under `endorsement_policies` in every X-Client config; the two must agree.
 
 ## 4. Copy crypto material
 
@@ -128,7 +128,7 @@ No network: `make run` (or `docker compose up --build`) starts one in-memory X-C
 | X-Client exits: `failed to read CA cert crypto/org1/tls/ca.crt` | run `./scripts/copy-crypto.sh` |
 | X-Client exits: `private key does not match certificate` | stale crypto after `make init`; re-run `copy-crypto.sh` |
 | `/healthz` `"ready": false` | key index still replaying blocks, or sidecar unreachable; see `readyError` |
-| `502 ABORTED_SIGNATURE_INVALID` | X-Client collects fewer signatures than the on-chain policy needs; see [docs/POLICIES.md §2](docs/POLICIES.md#2-two-places-that-must-agree) |
+| `502 ABORTED_SIGNATURE_INVALID` | X-Client collects fewer signatures than the on-chain policy needs: the on-chain policy and every config's `endorsement_policies` must match |
 | `503 ENDORSEMENT_UNAVAILABLE` | the two X-Clients' `endorsement_policies` differ, or a peer is missing from `peers:` |
 | `409 ABORTED_MVCC_CONFLICT` | a concurrent transaction touched the same keys; retry |
 | `500 … namespace cbdc_x is not registered` | namespace not created (step 3) or wrong name in `namespaces:` |

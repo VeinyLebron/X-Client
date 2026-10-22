@@ -39,7 +39,7 @@ The namespace endorsement policies are enforced on-chain by the committer. A tra
   Query Service 7001 · sidecar 4001                QS 7002 · sidecar 4002
 ```
 
-How a co-signer decides to sign, called **peer re-execution**: the co-signer re-runs the same operation on its own copy of the ledger and signs only if it gets byte-identical changes. See the worked example in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#peer-re-execution-worked-example).
+How a co-signer decides to sign, called **peer re-execution**: the co-signer re-runs the same operation on its own copy of the ledger and signs only if it gets byte-identical changes.
 
 ## Namespaces and policies
 
@@ -57,7 +57,7 @@ How a co-signer decides to sign, called **peer re-execution**: the co-signer re-
 | Org1 transfers, redeems, consolidates | Org1 | Org1 |
 | Org2 transfers, redeems, consolidates | Org2 | Org2 + Org1 |
 
-Payments are held as pending credits in `cbdc_credits`, so the payee does not have to be online. It folds them in with `consolidate`. To change any of these rules (both orgs sign everything, payee must accept, another issuer, a third bank), see **[docs/POLICIES.md](docs/POLICIES.md)**.
+Payments are held as pending credits in `cbdc_credits`, so the payee does not have to be online. It folds them in with `consolidate`. To change these rules, change the on-chain policy with `scripts/update-policy.sh` and set the same rule under `endorsement_policies` in every X-Client config; the two must agree.
 
 > Fabric-X has no private data: both committers store every namespace. `_pdc` restricts writes, not reads.
 
@@ -84,10 +84,7 @@ docker compose -f docker-compose.2org.yaml up -d --build   # or: make run-org1 /
 | Doc | Contents |
 |---|---|
 | [SETUP.md](SETUP.md) | step-by-step setup, end-to-end flow, troubleshooting |
-| [docs/POLICIES.md](docs/POLICIES.md) | how endorsement policies work and how to change them |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | glossary, transaction lifecycle, peer re-execution, reads, package map |
 | [docs/API.md](docs/API.md) | every endpoint, request and response format, error codes |
-| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | every config key, env variables, TLS, host vs Docker |
 
 ## Repository layout
 

@@ -3,7 +3,7 @@
 # which this X-Client collects from Org1's X-Client automatically.
 #
 # Defaults target the devnet from the host. The ${VAR:-default} references are overridden
-# by docker-compose.2org.yaml. Every key is described in docs/CONFIGURATION.md.
+# by docker-compose.2org.yaml.
 
 server:
   host: "0.0.0.0"
@@ -67,6 +67,6 @@ namespaces:
 # central_bank_msp and banks:
 #   cbdc_public, cbdc_cb_pdc, cbdc_credits, cbdc_org1_pdc: [Org1MSP]
 #   cbdc_org2_pdc:                                         [Org2MSP, Org1MSP]
-# Override only together with the on-chain policy; see docs/POLICIES.md.
+# Override only together with the on-chain policy (scripts/update-policy.sh), and identically in both configs.
 # endorsement_policies:
 #   cbdc_public: [Org1MSP, Org2MSP]
