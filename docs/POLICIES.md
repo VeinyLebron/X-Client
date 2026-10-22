@@ -1,6 +1,6 @@
 # Changing endorsement policies
 
-This guide explains how the endorsement rules work and how to change them: who must sign what, the issuer, new banks, namespace names. Every recipe was written against the 2-org devnet (Org1, Org2).
+This guide explains how the endorsement rules work and how to change them: who must sign what, the issuer, new banks, namespace names. Every recipe was written against the 2-org network `X-Setup/2-org` (Org1, Org2).
 
 ## 1. Concepts
 
@@ -25,7 +25,7 @@ The default layout on this branch:
 
 | Where | Set by | Effect |
 |---|---|---|
-| **On-chain policy** | `fxconfig namespace create/update` (devnet: `make init-namespace`, `scripts/update-policy.sh`) | The committer enforces it. This is what actually protects the ledger. |
+| **On-chain policy** | `fxconfig namespace create/update` (X-Setup: `make up` / `make init-namespace-cbdc`, `scripts/update-policy.sh`) | The committer enforces it. This is what actually protects the ledger. |
 | **Client policy** | `endorsement_policies` in each X-Client config, or the defaults derived from `central_bank_msp` + `namespaces.banks` | Which signatures X-Client collects before submitting. |
 
 - **Client asks for less than on-chain**: every affected transaction is aborted with `ABORTED_SIGNATURE_INVALID` (HTTP 502). Nothing is written.
@@ -36,7 +36,7 @@ The startup log prints the client policy in effect:
 ```
  Policy cbdc_org2_pdc : AND[Org2MSP Org1MSP]
 ```
-Compare it with `make list-namespaces` in the devnet. That command shows each policy encoded as hex; the version increases with every update.
+Compare it with `make status` (or `make list-namespaces`) in `X-Setup/2-org`. That command shows each policy encoded as hex; the version increases with every update.
 
 ## 3. Changing an existing namespace's policy
 
@@ -44,7 +44,7 @@ Namespaces can be updated in place; each update increases their version.
 
 ```bash
 # 1. on-chain (looks up the current version, submits, waits for commit)
-./scripts/update-policy.sh ~/Projects/repos-bench/fabric-x-samples/devnet \
+./scripts/update-policy.sh ../X-Setup/2-org \
     cbdc_public "AND('Org1MSP.member','Org2MSP.member')"
 # → 4) cbdc_public: version 1 policy: 1228…
 
@@ -99,7 +99,7 @@ done
 The default client policies follow `central_bank_msp` automatically. Existing wallets keep their owners; only who may mint, create and freeze changes.
 
 ### 4.4 Add a third bank (Org3)
-Network (in a copy of the devnet; see the `main` branch, which does this for a Central Bank org in `devnet-3org`):
+Network (in a copy of `X-Setup/2-org`; `X-Setup/3-org` shows the same change for a Central Bank org):
 1. Add an `Org3` peer org to `crypto-config.yaml` and `configtx.yaml` (`Application.Organizations`, `LifecycleEndorsement`), then `make init` and start a committer stack for it (copy `compose.org2.yaml`, rename the services, use new host ports).
 2. Register `cbdc_org3_pdc` with `AND('Org3MSP.member','Org1MSP.member')`.
 

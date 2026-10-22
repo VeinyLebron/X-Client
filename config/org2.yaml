@@ -1,4 +1,4 @@
-# Org2 (Org2MSP) X-Client for the 2-org network (fabric-x-samples/devnet, `make start-both`).
+# Org2 (Org2MSP) X-Client for the 2-org network (X-Setup/2-org, `make up`).
 # Org2 is a bank. Its transfers, redemptions and consolidations need Org1's co-signature,
 # which this X-Client collects from Org1's X-Client automatically.
 #

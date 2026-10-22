@@ -1,4 +1,4 @@
-# Setup Guide: 2-org devnet (Org1 + Org2) + X-Client
+# Setup Guide: 2-org network (X-Setup) + X-Client
 
 End-to-end setup from a fresh clone. For the 3-organization network, see the `main` branch.
 
@@ -6,46 +6,42 @@ End-to-end setup from a fresh clone. For the 3-organization network, see the `ma
 
 | Component | Provided by | Port(s) |
 |---|---|---|
-| Arma orderer, 4 parties | `fabric-x-samples/devnet` | routers `7050` `7150` `7250` `7350` |
-| Org1 committer (Query Service, sidecar) | devnet `compose.yaml` | `7001`, `4001` |
-| Org2 committer | devnet `compose.org2.yaml` | `7002`, `4002` |
+| Arma orderer, 4 parties | `X-Setup/2-org` | routers `7050` `7150` `7250` `7350` |
+| Org1 committer (Query Service, sidecar) | `X-Setup/2-org/compose.yaml` | `7001`, `4001` |
+| Org2 committer | `X-Setup/2-org/compose.org2.yaml` | `7002`, `4002` |
 | X-Client Org1 (issuer + bank) | this repo, `config/org1.yaml` | `8080` |
 | X-Client Org2 (bank) | this repo, `config/org2.yaml` | `8081` |
 
-The devnet is used unmodified. The `devnet-3org` network from the `main` branch uses the same container names and ports, so stop it before starting this one (`make stop` in `devnet-3org`).
+The network comes from **[X-Setup](https://github.com/VeinyLebron/X-Setup)** (`2-org/`): the upstream Fabric-X `devnet` (Org1, Org2) with one-command `make up`. The 3-org network (`X-Setup/3-org`, used by the `main` branch) shares container names and ports, so only one can run at a time. `make up` tells you if the other one is running.
 
 ## 2. Prerequisites
 
 - Linux or macOS, Go 1.27.3+, Docker with Compose, your user in the `docker` group (log out and in after adding it)
-- `fabric-x-samples` cloned; the devnet is `fabric-x-samples/devnet`
-- `nc` (netcat), which the devnet's `make start-both` uses to wait for ports: `sudo pacman -S openbsd-netcat` or `sudo apt install netcat-openbsd`. Without it the command never returns (see Troubleshooting).
+- X-Setup cloned **next to** this repo (`git clone https://github.com/VeinyLebron/X-Setup.git`), so that `../X-Setup/2-org` exists
+- No `nc` needed: X-Setup's targets wait for ports with bash. (The upstream fabric-x-samples devnet's `make start-both` hangs without `nc`.)
 
 ## 3. Start the network and register the namespaces
 
 ```bash
-cd /path/to/fabric-x-samples/devnet
-
-make init          # only if devnet/crypto does not exist yet (it deletes and regenerates crypto)
-make start-both    # 4-party orderer + Org1 and Org2 committers (28 containers)
+cd ../X-Setup/2-org
+make up          # crypto (first run), orderer + Org1 and Org2 committers (28 containers), namespaces
+make status      # containers and the 5 namespaces at version 0
 ```
 
-Register the five CBDC namespaces with their endorsement policies:
-```bash
-make init-namespace NS=cbdc_public   POLICY="AND('Org1MSP.member')"
-make init-namespace NS=cbdc_cb_pdc   POLICY="AND('Org1MSP.member')"
-make init-namespace NS=cbdc_credits  POLICY="AND('Org1MSP.member')"
-make init-namespace NS=cbdc_org1_pdc POLICY="AND('Org1MSP.member')"
-make init-namespace NS=cbdc_org2_pdc POLICY="AND('Org2MSP.member','Org1MSP.member')"
+`make up` is the same as running `make init` (first run), `make start-both`, waiting until all containers are healthy, and registering the five CBDC namespaces:
 
-make list-namespaces
-```
-Expected: `Installed namespaces (5 total)`, each at `version 0`. Creating a namespace that already exists is skipped. To use different rules, see [docs/POLICIES.md](docs/POLICIES.md) before registering.
+| Namespace | Policy |
+|---|---|
+| `cbdc_public`, `cbdc_cb_pdc`, `cbdc_credits`, `cbdc_org1_pdc` | `AND('Org1MSP.member')` |
+| `cbdc_org2_pdc` | `AND('Org2MSP.member','Org1MSP.member')` |
+
+On a plain fabric-x-samples `devnet`, register them yourself with `make init-namespace NS=<name> POLICY="<policy>"` for each row. To use different rules, see [docs/POLICIES.md](docs/POLICIES.md); existing namespaces can be changed later with `scripts/update-policy.sh`.
 
 ## 4. Copy crypto material
 
 ```bash
-cd /path/to/X-Client
-./scripts/copy-crypto.sh /path/to/fabric-x-samples/devnet
+cd ../../X-Client
+./scripts/copy-crypto.sh          # defaults to ../X-Setup/2-org; or pass the network folder
 ```
 
 | Destination | Contents |
@@ -54,7 +50,7 @@ cd /path/to/X-Client
 | `crypto/cas/` | each org's public MSP CA, used to authenticate the other X-Client |
 | `crypto/orderer-tls/` | orderer TLS CAs, used to verify the routers |
 
-Everything under `crypto/` except the READMEs is git-ignored. Re-run the script after every `make init` in the devnet.
+Everything under `crypto/` except the READMEs is git-ignored. Re-run the script after every `make reset` in X-Setup.
 
 ## 5. Run the two X-Clients
 
@@ -126,8 +122,8 @@ No network: `make run` (or `docker compose up --build`) starts one in-memory X-C
 
 | Symptom | Cause / fix |
 |---|---|
-| `make start-both` never returns | `nc` is not installed, so the port-wait loop spins forever. The containers are up anyway: check `docker ps` shows 28 healthy, then press Ctrl-C. Better: install netcat. |
-| `make start-both`: "port 7050 is already in use" | another devnet (e.g. `devnet-3org`) is running; `make stop` there |
+| `Error: another Fabric-X network is already running` | the 3-org network (or another devnet) is up; run the `make down` command it prints |
+| upstream devnet `make start-both` never returns | that Makefile needs `nc`; use X-Setup's `make up`, or install netcat |
 | `permission denied … docker.sock` | your user is not in the `docker` group, or the session predates it: log out and in, or `newgrp docker` |
 | X-Client exits: `failed to read CA cert crypto/org1/tls/ca.crt` | run `./scripts/copy-crypto.sh` |
 | X-Client exits: `private key does not match certificate` | stale crypto after `make init`; re-run `copy-crypto.sh` |
@@ -136,13 +132,13 @@ No network: `make run` (or `docker compose up --build`) starts one in-memory X-C
 | `503 ENDORSEMENT_UNAVAILABLE` | the two X-Clients' `endorsement_policies` differ, or a peer is missing from `peers:` |
 | `409 ABORTED_MVCC_CONFLICT` | a concurrent transaction touched the same keys; retry |
 | `500 … namespace cbdc_x is not registered` | namespace not created (step 3) or wrong name in `namespaces:` |
-| everything fails after `make purge` | the ledger was wiped: register the namespaces again (step 3) |
+| X-Client fails after `make reset` | crypto and ledger were regenerated: `make up`, re-run `copy-crypto.sh`, restart X-Client |
 
 ## 9. Tear down
 
 ```bash
 docker compose -f docker-compose.2org.yaml down   # if the X-Clients run in Docker
-cd /path/to/fabric-x-samples/devnet
-make stop     # stop, keep the ledger
-make purge    # stop and wipe the ledger (namespaces must be re-registered)
+cd ../X-Setup/2-org
+make down     # stop, keep the ledger
+make reset    # stop and delete ledger and crypto (then re-run copy-crypto.sh after the next make up)
 ```

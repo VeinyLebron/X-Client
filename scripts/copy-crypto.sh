@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Copy the crypto material X-Client needs from fabric-x-samples/devnet (after `make init`).
+# Copy the crypto material X-Client needs from the 2-org network (after `make up` / `make init`).
+# Source: the argument, else ../X-Setup/2-org next to this repo, else fabric-x-samples/devnet.
 #
 # Per organization (crypto/org1, crypto/org2):
 #   cert.pem, priv_sk          signing identity (User1)       -> endorsements, envelopes
@@ -11,16 +12,23 @@
 
 set -euo pipefail
 
-DEVNET_DIR="${1:-$HOME/Projects/repos-bench/fabric-x-samples/devnet}"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ -n "${1:-}" ]; then
+    DEVNET_DIR="$1"
+elif [ -d "$REPO_DIR/../X-Setup/2-org" ]; then
+    DEVNET_DIR="$REPO_DIR/../X-Setup/2-org"
+else
+    DEVNET_DIR="$HOME/Projects/repos-bench/fabric-x-samples/devnet"
+fi
 CRYPTO_DIR="$DEVNET_DIR/crypto"
 
 if [ ! -d "$CRYPTO_DIR/peerOrganizations/org2.example.com" ]; then
-    echo "Error: devnet crypto not found at $CRYPTO_DIR (run 'make init' there first)."
-    echo "Usage: ./scripts/copy-crypto.sh [path-to-fabric-x-samples/devnet]"
+    echo "Error: 2-org crypto not found at $CRYPTO_DIR (run 'make up' in X-Setup/2-org first)."
+    echo "Usage: ./scripts/copy-crypto.sh [path-to-X-Setup/2-org or fabric-x-samples/devnet]"
     exit 1
 fi
 
-DEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/crypto"
+DEST_DIR="$REPO_DIR/crypto"
 echo "Copying crypto material from: $CRYPTO_DIR"
 echo "Destination directory:        $DEST_DIR"
 

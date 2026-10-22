@@ -1,4 +1,4 @@
-# Org1 (Org1MSP) X-Client for the 2-org network (fabric-x-samples/devnet, `make start-both`).
+# Org1 (Org1MSP) X-Client for the 2-org network (X-Setup/2-org, `make up`).
 # Org1 is the issuer (creates and freezes wallets, mints) and also a bank. It signs its own
 # transactions alone and co-signs Org2's transactions that touch cbdc_org2_pdc.
 #

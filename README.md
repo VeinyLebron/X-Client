@@ -1,6 +1,6 @@
 # Fabric-X Endorser REST Client (`X-Client`) — 2-org network
 
-A Fabric-X endorser, coordinator and submitter for the **Wholesale CBDC & Interbank Settlement** contract (`cbdc-wallet`), set up for a **two-organization network: Org1 and Org2** (the stock `fabric-x-samples/devnet`).
+A Fabric-X endorser, coordinator and submitter for the **Wholesale CBDC & Interbank Settlement** contract (`cbdc-wallet`), set up for a **two-organization network: Org1 and Org2** (the `2-org` network from [X-Setup](https://github.com/VeinyLebron/X-Setup)).
 
 Each organization runs its own X-Client. A REST call to an organization's X-Client:
 
@@ -12,7 +12,7 @@ Each organization runs its own X-Client. A REST call to an organization's X-Clie
 
 The namespace endorsement policies are enforced on-chain by the committer. A transaction that changes Org2's balance without both Org2's and Org1's signatures is rejected, whatever any client does.
 
-> **Branches.** `two-org` (this branch): Org1 + Org2 on the stock `devnet`. `main`: three organizations (Central Bank, Bank A, Bank B) on `devnet-3org`. Same code; the branches differ in configuration and docs (plus the configurable issuer here).
+> **Branches.** `two-org` (this branch): Org1 + Org2, network `X-Setup/2-org`. `main`: three organizations (Central Bank, Bank A, Bank B), network `X-Setup/3-org`. Same code; the branches differ in configuration and docs (plus the configurable issuer here).
 
 ## Roles
 
@@ -71,12 +71,12 @@ curl -X POST localhost:8080/api/v1/wallets -H 'Content-Type: application/json' \
 ```
 Use `-H 'X-Caller-MSP: Org2MSP'` to act as Org2.
 
-**Against the 2-org devnet**: full steps in **[SETUP.md](SETUP.md)**.
+**Against the 2-org network**: the network lives in **[X-Setup](https://github.com/VeinyLebron/X-Setup)**; clone it next to this repo. Full steps in **[SETUP.md](SETUP.md)**.
 ```bash
-cd ~/Projects/repos-bench/fabric-x-samples/devnet && make start-both     # + register 5 namespaces
-cd ~/Projects/X-Client && ./scripts/copy-crypto.sh
-make run-org1      # :8080      (or: docker compose -f docker-compose.2org.yaml up -d --build)
-make run-org2      # :8081
+git clone https://github.com/VeinyLebron/X-Setup.git        # next to X-Client
+cd X-Setup/2-org && make up                                # network + namespaces
+cd ../../X-Client && ./scripts/copy-crypto.sh              # keys and certificates
+docker compose -f docker-compose.2org.yaml up -d --build   # or: make run-org1 / make run-org2
 ```
 
 ## Documentation
@@ -95,7 +95,7 @@ make run-org2      # :8081
 cmd/server/              entry point, config loading
 pkg/                     contract, simulator, engine, peers, endorser, fabricx, store, api
 config/                  config.yaml (standalone), org1.yaml, org2.yaml
-scripts/copy-crypto.sh   copy keys/certs from the devnet
+scripts/copy-crypto.sh   copy keys/certs from X-Setup/2-org
 scripts/update-policy.sh change a namespace's on-chain policy
 docker-compose.yaml      standalone container
 docker-compose.2org.yaml Org1 + Org2 containers on the devnet network
