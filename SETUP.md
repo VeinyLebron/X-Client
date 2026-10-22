@@ -1,6 +1,6 @@
 # Setup Guide: devnet-3org + X-Client
 
-End-to-end setup of the three-organization wholesale CBDC network (Central Bank, Bank A, Bank B) from a fresh clone.
+End-to-end setup of the three-organization wholesale CBDC network (Central Bank, Bank A, Bank B) from a fresh clone. For a two-organization network (Org1 + Org2 on the stock `devnet`), use the `two-org` branch.
 
 ---
 
@@ -20,6 +20,7 @@ End-to-end setup of the three-organization wholesale CBDC network (Central Bank,
 
 - Linux or macOS, **Go 1.27.3+**, Docker with Compose (your user in the `docker` group)
 - `fabric-x-samples` checked out with the `devnet-3org` folder
+- `make start-3org` waits for ports with bash only. The stock devnet's `make start`/`start-both` need `nc`; `start-3org` does not.
 
 ## 3. Start the network
 
@@ -39,6 +40,8 @@ make list-namespaces       # expect 5 namespaces at version 0
 | `cbdc_public`, `cbdc_cb_pdc`, `cbdc_credits` | `AND('CentralBankMSP.member')` |
 | `cbdc_org1_pdc` | `AND('Org1MSP.member','CentralBankMSP.member')` |
 | `cbdc_org2_pdc` | `AND('Org2MSP.member','CentralBankMSP.member')` |
+
+To use different rules, see [docs/POLICIES.md](docs/POLICIES.md); existing namespaces can be changed later with `scripts/update-policy.sh`.
 
 ## 4. Copy crypto material
 
@@ -92,7 +95,7 @@ curl localhost:8080/api/v1/supply                      # totalSupply 900000
 curl -X POST localhost:8081/api/v1/movements/T2001/verify $J -d '{"amount":300000,"salt":"secret-salt-16-chars-min"}'
 ```
 
-Every mutation returns `"status": "COMMITTED"` with the endorsements it carried. For example, the transfer shows `Org1MSP` and `CentralBankMSP` on `cbdc_org1_pdc`.
+Every mutation returns `"status": "COMMITTED"` with the endorsements it carried. For example, the transfer shows `Org1MSP` and `CentralBankMSP` on `cbdc_org1_pdc`. Response formats are in [docs/API.md](docs/API.md).
 
 Expected refusals:
 - Bank B's X-Client debiting `WA` → `403 ACCESS_DENIED`
@@ -104,7 +107,23 @@ Expected refusals:
 
 No network at all: `make run` (or `docker compose up --build`) starts one in-memory X-Client holding throwaway keys for all three organizations on `:8080`. Use `X-Caller-MSP` to choose the acting organization. The flow above works unchanged, with every port set to 8080.
 
-## 8. Tear down
+## 8. Troubleshooting
+
+| Symptom | Cause / fix |
+|---|---|
+| `make start-3org`: "port 7050 is already in use" | another devnet (e.g. the stock `devnet`) is running; `make stop` there |
+| `permission denied … docker.sock` | your user is not in the `docker` group, or the session predates it: log out and in, or `newgrp docker` |
+| X-Client exits: `failed to read CA cert crypto/centralbank/tls/ca.crt` | run `./scripts/copy-crypto.sh` |
+| X-Client exits: `private key does not match certificate` | stale crypto after `make init`; re-run `copy-crypto.sh` |
+| `/healthz` `"ready": false` | key index still replaying blocks, or sidecar unreachable; see `readyError` |
+| `502 ABORTED_SIGNATURE_INVALID` | X-Client collects fewer signatures than the on-chain policy needs; see [docs/POLICIES.md §2](docs/POLICIES.md#2-two-places-that-must-agree) |
+| `503 ENDORSEMENT_UNAVAILABLE` | the X-Clients' `endorsement_policies` differ, or a required MSP is missing from `peers:` |
+| `503 PEER_UNREACHABLE` | the Central Bank X-Client is down or its URL in `peers:` is wrong |
+| `409 ABORTED_MVCC_CONFLICT` | a concurrent transaction touched the same keys; retry |
+| `500 … namespace cbdc_x is not registered` | run `make init-namespace-cbdc`, or fix `namespaces:` |
+| everything fails after `make purge` | the ledger was wiped: run `make init-namespace-cbdc` again |
+
+## 9. Tear down
 
 ```bash
 docker compose -f docker-compose.3org.yaml down     # if X-Clients run in Docker
