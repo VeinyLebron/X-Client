@@ -1,6 +1,6 @@
 # Fabric-X Endorser REST Client (`X-Client`) — 3-org network
 
-A Fabric-X endorser, coordinator and submitter for the **Wholesale CBDC & Interbank Settlement** contract (`cbdc-wallet`), set up for a **three-organization network: Central Bank, Bank A (Org1) and Bank B (Org2)** (`fabric-x-samples/devnet-3org`).
+A Fabric-X endorser, coordinator and submitter for the **Wholesale CBDC & Interbank Settlement** contract (`cbdc-wallet`), set up for a **three-organization network: Central Bank, Bank A (Org1) and Bank B (Org2)** (the `3-org` network from [X-Setup](https://github.com/VeinyLebron/X-Setup)).
 
 Each organization runs its own X-Client. A REST call to an organization's X-Client:
 
@@ -12,7 +12,7 @@ Each organization runs its own X-Client. A REST call to an organization's X-Clie
 
 The namespace endorsement policies are enforced on-chain by the committer, so no organization can change a bank's balance on its own, whatever its X-Client does.
 
-> **Branches.** `main` (this branch): Central Bank + Bank A + Bank B on `devnet-3org`. `two-org`: Org1 + Org2 on the stock `devnet`, with Org1 as issuer. Same code; the branches differ in configuration and docs (`two-org` also makes the issuer configurable).
+> **Branches.** `main` (this branch): Central Bank + Bank A + Bank B, network `X-Setup/3-org`. `two-org`: Org1 + Org2, network `X-Setup/2-org`, with Org1 as issuer. Same code; the branches differ in configuration and docs (`two-org` also makes the issuer configurable).
 
 ## Roles
 
@@ -46,7 +46,7 @@ How a co-signer decides to sign, called **peer re-execution**: the Central Bank 
 
 ## Namespaces and policies
 
-Registered by `make init-namespace-cbdc` in `devnet-3org`:
+Registered by `make up` in `X-Setup/3-org`:
 
 | Namespace | Holds | Policy |
 |---|---|---|
@@ -74,12 +74,12 @@ make run          # or: docker compose up --build
 ```
 `X-Caller-MSP` picks the acting organization (default `CentralBankMSP`).
 
-**Against devnet-3org**: full steps in **[SETUP.md](SETUP.md)**.
+**Against the 3-org network**: the network lives in **[X-Setup](https://github.com/VeinyLebron/X-Setup)**; clone it next to this repo. Full steps in **[SETUP.md](SETUP.md)**.
 ```bash
-cd ~/Projects/repos-bench/fabric-x-samples/devnet-3org
-make init && make start-3org && make init-namespace-cbdc
-cd ~/Projects/X-Client && ./scripts/copy-crypto.sh
-make run-centralbank & make run-bank-a & make run-bank-b    # or: docker compose -f docker-compose.3org.yaml up -d --build
+git clone https://github.com/VeinyLebron/X-Setup.git        # next to X-Client
+cd X-Setup/3-org && make up                                # network + namespaces
+cd ../../X-Client && ./scripts/copy-crypto.sh              # keys and certificates
+docker compose -f docker-compose.3org.yaml up -d --build   # or: make run-centralbank / run-bank-a / run-bank-b
 ```
 
 ```bash
@@ -105,10 +105,10 @@ curl -X POST localhost:8081/api/v1/movements/transfer -H 'Content-Type: applicat
 cmd/server/              entry point, config loading
 pkg/                     contract, simulator, engine, peers, endorser, fabricx, store, api
 config/                  config.yaml (standalone), centralbank.yaml, bank_a.yaml, bank_b.yaml
-scripts/copy-crypto.sh   copy keys/certs from devnet-3org
+scripts/copy-crypto.sh   copy keys/certs from X-Setup/3-org
 scripts/update-policy.sh change a namespace's on-chain policy
 docker-compose.yaml      standalone container
-docker-compose.3org.yaml the three X-Clients on the devnet-3org network
+docker-compose.3org.yaml the three X-Clients on the X-Setup/3-org network
 docs/                    documentation
 ```
 

@@ -1,6 +1,6 @@
 # Changing endorsement policies
 
-This guide explains how the endorsement rules work and how to change them: who must sign what, new banks, namespace names. Recipes use the 3-org network `devnet-3org` (CentralBankMSP, Org1MSP = Bank A, Org2MSP = Bank B).
+This guide explains how the endorsement rules work and how to change them: who must sign what, new banks, namespace names. Recipes use the 3-org network `X-Setup/3-org` (CentralBankMSP, Org1MSP = Bank A, Org2MSP = Bank B).
 
 ## 1. Concepts
 
@@ -25,7 +25,7 @@ The default layout on this branch:
 
 | Where | Set by | Effect |
 |---|---|---|
-| **On-chain policy** | `fxconfig namespace create/update` (devnet-3org: `make init-namespace-cbdc`, `scripts/update-policy.sh`) | The committer enforces it. This is what actually protects the ledger. |
+| **On-chain policy** | `fxconfig namespace create/update` (X-Setup/3-org: `make init-namespace-cbdc`, `scripts/update-policy.sh`) | The committer enforces it. This is what actually protects the ledger. |
 | **Client policy** | `endorsement_policies` in each X-Client config, or the defaults (Central Bank on everything, plus the owning bank on its balance namespace) | Which signatures X-Client collects before submitting. |
 
 - **Client asks for less than on-chain**: every affected transaction is aborted with `ABORTED_SIGNATURE_INVALID` (HTTP 502). Nothing is written.
@@ -33,7 +33,7 @@ The default layout on this branch:
 - **All X-Clients must use the same client policy.** A co-signer only signs the namespaces *its* config says it is required for. If the Central Bank's config omits a requirement that Bank A's config has, Bank A's request fails with `503 ENDORSEMENT_UNAVAILABLE`.
 - **A peer must be configured for every MSP whose signature is required**, under `peers:` in the initiator's config (endpoint and MSP CA). The co-signer needs the initiator under its own `peers:` to accept the request.
 
-The startup log prints the client policy in effect (`Policy cbdc_org1_pdc : AND[Org1MSP CentralBankMSP]`). Compare it with `make list-namespaces` in devnet-3org, which shows each policy hex-encoded with its version.
+The startup log prints the client policy in effect (`Policy cbdc_org1_pdc : AND[Org1MSP CentralBankMSP]`). Compare it with `make list-namespaces` in X-Setup/3-org, which shows each policy hex-encoded with its version.
 
 ## 3. Changing an existing namespace's policy
 
@@ -41,7 +41,7 @@ Namespaces can be updated in place; each update increases their version.
 
 ```bash
 # 1. on-chain (looks up the current version, submits, waits for commit)
-./scripts/update-policy.sh ~/Projects/repos-bench/fabric-x-samples/devnet-3org \
+./scripts/update-policy.sh ../X-Setup/3-org \
     cbdc_public "AND('CentralBankMSP.member','Org1MSP.member','Org2MSP.member')"
 
 # 2. client: the same rule in ALL THREE configs (centralbank.yaml, bank_a.yaml, bank_b.yaml)
@@ -56,7 +56,7 @@ endorsement_policies:
 
 Between steps 1 and 4, transactions touching that namespace fail with `ABORTED_SIGNATURE_INVALID`. X-Client picks up the new namespace version by itself (cached for at most 30 s; a restart refreshes it immediately).
 
-`scripts/update-policy.sh` runs `fxconfig namespace update` as Org1's User1. That works because devnet-3org's `LifecycleEndorsement` is `OR('Org1MSP.member','Org2MSP.member','CentralBankMSP.member')`. On a network with a stricter lifecycle policy, produce the update with `--output=tx.json` and collect the extra endorsements before submitting.
+`scripts/update-policy.sh` runs `fxconfig namespace update` as Org1's User1. That works because X-Setup/3-org's `LifecycleEndorsement` is `OR('Org1MSP.member','Org2MSP.member','CentralBankMSP.member')`. On a network with a stricter lifecycle policy, produce the update with `--output=tx.json` and collect the extra endorsements before submitting.
 
 ## 4. Recipes
 
@@ -79,7 +79,7 @@ endorsement_policies:          # all three configs
 Transfers still need the Central Bank for `cbdc_public` and `cbdc_credits`. The Central Bank remains the notary of the movement log; it just cannot change bank balances any more.
 
 ### 4.4 Add a third bank (Org3)
-Network (in a copy of devnet-3org, the same way `devnet-3org` added `CentralBank`):
+Network (in a copy of `X-Setup/3-org`, the same way it added `CentralBank` to the upstream devnet):
 1. Add an `Org3` peer org to `crypto-config.yaml` and `configtx.yaml` (`Application.Organizations`, `LifecycleEndorsement`), `make init`, and add a committer stack (copy `compose.org2.yaml`, rename services, new host ports).
 2. Register `cbdc_org3_pdc` with `AND('Org3MSP.member','CentralBankMSP.member')`.
 

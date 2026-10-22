@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Change the endorsement policy of an existing namespace on a fabric-x-samples devnet.
+# Change the endorsement policy of an existing namespace on an X-Setup (or fabric-x-samples) network.
 # Runs `fxconfig namespace update` the same way the devnet Makefile runs `namespace create`:
 # as Org1's User1, endorsed by Org1 (the devnet LifecycleEndorsement policy accepts it).
 #
 #   ./scripts/update-policy.sh <devnet-dir> <namespace> "<policy>"
-#   ./scripts/update-policy.sh ~/Projects/repos-bench/fabric-x-samples/devnet-3org cbdc_public "AND('CentralBankMSP.member')"
+#   ./scripts/update-policy.sh ../X-Setup/3-org cbdc_public "AND('CentralBankMSP.member')"
 #
 # The current namespace version is looked up automatically. See docs/POLICIES.md for the
 # matching X-Client configuration change.

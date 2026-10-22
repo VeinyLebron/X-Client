@@ -5,7 +5,7 @@ X-Client reads one YAML file, passed with `-config` (default `config/config.yaml
 | File | Use |
 |---|---|
 | `config/config.yaml` | standalone: in-memory ledger, all three orgs in one process, `:8080` |
-| `config/centralbank.yaml` | Central Bank against devnet-3org, `:8080` |
+| `config/centralbank.yaml` | Central Bank against X-Setup/3-org, `:8080` |
 | `config/bank_a.yaml` | Bank A (Org1MSP), `:8081` |
 | `config/bank_b.yaml` | Bank B (Org2MSP), `:8082` |
 
@@ -59,7 +59,7 @@ Each `tls` block takes:
 | `cert_path`, `key_path` | client certificate and key (`mtls` only) |
 | `server_name` | override the name checked in the server certificate. Defaults to the endpoint host |
 
-devnet-3org requires `mtls` everywhere. A committer trusts client certificates from its own org's TLS CA (`crypto/<org>/tls/client.crt`). The routers trust every application org's TLS CA and present certificates from the four orderer TLS CAs (`crypto/orderer-tls/`). Server certificates are always verified.
+X-Setup/3-org requires `mtls` everywhere. A committer trusts client certificates from its own org's TLS CA (`crypto/<org>/tls/client.crt`). The routers trust every application org's TLS CA and present certificates from the four orderer TLS CAs (`crypto/orderer-tls/`). Server certificates are always verified.
 
 Peer-to-peer X-Client traffic (`peers.*.endpoint`) is plain HTTP in the shipped configs. Requests are authenticated by their MSP signature, not by TLS. Put the endpoints on a private network, or behind TLS (use `https://` URLs), if they cross untrusted links.
 
@@ -73,4 +73,4 @@ Peer-to-peer X-Client traffic (`peers.*.endpoint`) is plain HTTP in the shipped 
 | Routers | `localhost:7050`… | `orderer-party1-router:7050`… |
 | Peers | `http://localhost:8080` / `8081` / `8082` | `http://x-client-centralbank:8080`, `http://x-client-bank-a:8081`, `http://x-client-bank-b:8082` |
 
-devnet-3org's server certificates include both `localhost` and the container names, so TLS verifies either way.
+X-Setup/3-org's server certificates include both `localhost` and the container names, so TLS verifies either way.

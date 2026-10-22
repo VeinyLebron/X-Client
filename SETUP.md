@@ -1,4 +1,4 @@
-# Setup Guide: devnet-3org + X-Client
+# Setup Guide: 3-org network (X-Setup) + X-Client
 
 End-to-end setup of the three-organization wholesale CBDC network (Central Bank, Bank A, Bank B) from a fresh clone. For a two-organization network (Org1 + Org2 on the stock `devnet`), use the `two-org` branch.
 
@@ -8,32 +8,29 @@ End-to-end setup of the three-organization wholesale CBDC network (Central Bank,
 
 | Component | Provided by | Port(s) |
 |---|---|---|
-| Arma orderer, 4 parties | `fabric-x-samples/devnet-3org` | routers `7050` `7150` `7250` `7350` |
-| Org1 (Bank A) committer: Query Service, sidecar | devnet-3org `compose.yaml` | `7001`, `4001` |
-| Org2 (Bank B) committer | devnet-3org `compose.org2.yaml` | `7002`, `4002` |
-| Central Bank committer | devnet-3org `compose.centralbank.yaml` | `7003`, `4003` |
+| Arma orderer, 4 parties | `X-Setup/3-org` | routers `7050` `7150` `7250` `7350` |
+| Org1 (Bank A) committer: Query Service, sidecar | X-Setup/3-org `compose.yaml` | `7001`, `4001` |
+| Org2 (Bank B) committer | X-Setup/3-org `compose.org2.yaml` | `7002`, `4002` |
+| Central Bank committer | X-Setup/3-org `compose.centralbank.yaml` | `7003`, `4003` |
 | X-Client per organization | this repo | `8080` CB, `8081` Bank A, `8082` Bank B |
 
-`devnet-3org` is a copy of the upstream `devnet` with a third peer organization, **`CentralBankMSP`** (`centralbank.example.com`), added to `crypto-config.yaml`, `configtx.yaml` (genesis block and lifecycle policy) and its own committer stack. The original `devnet` is untouched. Both use the same container names and the `fabric-x` network, so **run only one of them at a time**.
+The network comes from **[X-Setup](https://github.com/VeinyLebron/X-Setup)** (`3-org/`): the upstream Fabric-X `devnet` plus a third peer organization, **`CentralBankMSP`** (`centralbank.example.com`), with one-command `make up`. Fabric-X networks share container names and the `fabric-x` network, so **run only one at a time**.
 
 ## 2. Prerequisites
 
 - Linux or macOS, **Go 1.27.3+**, Docker with Compose (your user in the `docker` group)
-- `fabric-x-samples` checked out with the `devnet-3org` folder
-- `make start-3org` waits for ports with bash only. The stock devnet's `make start`/`start-both` need `nc`; `start-3org` does not.
+- X-Setup cloned **next to** this repo (`git clone https://github.com/VeinyLebron/X-Setup.git`), so that `../X-Setup/3-org` exists
+- No `nc` needed: X-Setup's targets wait for ports with bash.
 
 ## 3. Start the network
 
 ```bash
-cd /path/to/fabric-x-samples/devnet-3org
-
-make init                  # crypto for 4 orderer orgs + Org1, Org2, CentralBank; genesis block
-make start-3org            # orderers + all three committer stacks (35 containers)
-make init-namespace-cbdc   # register the 5 CBDC namespaces with their policies
-make list-namespaces       # expect 5 namespaces at version 0
+cd ../X-Setup/3-org
+make up          # crypto (first run), orderers + three committer stacks (35 containers), namespaces
+make status      # containers and the 5 namespaces at version 0
 ```
 
-`init-namespace-cbdc` registers:
+`make up` is the same as running `make init` (first run), `make start-3org`, waiting until all containers are healthy, and `make init-namespace-cbdc`. It registers:
 
 | Namespace | Policy |
 |---|---|
@@ -46,8 +43,8 @@ To use different rules, see [docs/POLICIES.md](docs/POLICIES.md); existing names
 ## 4. Copy crypto material
 
 ```bash
-cd /path/to/X-Client
-./scripts/copy-crypto.sh /path/to/fabric-x-samples/devnet-3org
+cd ../../X-Client
+./scripts/copy-crypto.sh          # defaults to ../X-Setup/3-org; or pass the network folder
 ```
 
 For each organization this copies the User1 signing identity (`crypto/<org>/cert.pem`, `priv_sk`), the org TLS CA and the user TLS client keypair (`crypto/<org>/tls/`). It also copies the public MSP CA of every organization (`crypto/cas/`) and the orderer TLS CAs (`crypto/orderer-tls/`). Everything under `crypto/` except the READMEs is git-ignored.
@@ -127,7 +124,7 @@ No network at all: `make run` (or `docker compose up --build`) starts one in-mem
 
 ```bash
 docker compose -f docker-compose.3org.yaml down     # if X-Clients run in Docker
-cd /path/to/fabric-x-samples/devnet-3org
-make stop     # keep ledger data
-make purge    # wipe containers and databases
+cd ../X-Setup/3-org
+make down     # stop, keep the ledger
+make reset    # stop and delete ledger and crypto (then re-run copy-crypto.sh after the next make up)
 ```
