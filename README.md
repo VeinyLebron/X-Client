@@ -1,6 +1,6 @@
 # Fabric-X Endorser REST Client (`X-Client`) — 3-org network
 
-A Fabric-X endorser, coordinator and submitter for the **Wholesale CBDC & Interbank Settlement** contract (`cbdc-wallet`), set up for a **three-organization network: Central Bank, Bank A (Org1) and Bank B (Org2)** (the `3-org` network from [X-Setup](https://github.com/VeinyLebron/X-Setup)).
+A Fabric-X endorser, coordinator and submitter for the **Wholesale CBDC & Interbank Settlement** contract (`cbdc-wallet`), set up for a **three-organization network: Central Bank, Bank A (Org1) and Bank B (Org2)** (A 3 org setup).
 
 Each organization runs its own X-Client. A REST call to an organization's X-Client:
 
@@ -74,13 +74,7 @@ make run          # or: docker compose up --build
 ```
 `X-Caller-MSP` picks the acting organization (default `CentralBankMSP`).
 
-**Against the 3-org network**: the network lives in **[X-Setup](https://github.com/VeinyLebron/X-Setup)**; clone it next to this repo. Full steps in **[SETUP.md](SETUP.md)**.
-```bash
-git clone https://github.com/VeinyLebron/X-Setup.git        # next to X-Client
-cd X-Setup/3-org && make up                                # network + namespaces
-cd ../../X-Client && ./scripts/copy-crypto.sh              # keys and certificates
-docker compose -f docker-compose.3org.yaml up -d --build   # or: make run-centralbank / run-bank-a / run-bank-b
-```
+**Against the 3-org network**: ; clone it next to this repo. Full steps in **[SETUP.md](SETUP.md)**.
 
 ```bash
 # Bank A pays Bank B; Bank A's X-Client collects the Central Bank's co-signature.
